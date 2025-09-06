@@ -4,14 +4,24 @@ const Aggregate = require('../models/Aggregate');
 const Alert = require('../models/Alert');
 const jwt = require('jsonwebtoken');
 
+
 // @desc    Register a new user
 // @route   POST /api/v1/auth/register
 exports.register = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, username } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" });
+    if (!email || !password || !username) {
+      return res.status(400).json({ message: "Email, password, and username are required" });
+    }
+    // Add validation for username
+    if (username.length < 3) {
+        return res.status(400).json({ message: "Username must be at least 3 characters" });
+    }
+    // Check if username is already taken
+    const existingUsername = await User.findOne({ username });
+    if (existingUsername) {
+        return res.status(400).json({ message: "This username is already taken" });
     }
     if (password.length < 6) {
         return res.status(400).json({ message: "Password must be at least 6 characters" });
@@ -23,7 +33,7 @@ exports.register = async (req, res) => {
     }
 
     // Create user with only the essential fields. Consent is handled separately.
-    const user = await User.create({ email, password });
+    const user = await User.create({ email, password,username});
 
     const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
@@ -31,7 +41,8 @@ exports.register = async (req, res) => {
     res.status(201).json({
       token,
       userId: user._id, // The frontend will need this for subsequent requests
-      pseudonymId: user.pseudonymId
+      pseudonymId: user.pseudonymId,
+      username: user.username
     });
   } catch (error) {
     res.status(500).json({ message: "Server error during registration", error: error.message });
@@ -71,19 +82,45 @@ exports.login = async (req, res) => {
     }
 };
 
-// @desc    Get user profile (consent flags, etc.)
+// @desc    Get user profile (email, username, consent flags, etc.)
 // @route   GET /api/v1/auth/profile
 exports.getProfile = async (req, res) => {
-    // req.user is attached by the 'protect' middleware.
-    // We explicitly fetch it again to control what is returned.
     try {
-        const profile = await User.findById(req.user._id).select('email pseudonymId consentFlags');
+        // We now also select the 'username' to display in the app's profile screen
+        const profile = await User.findById(req.user._id).select('email pseudonymId username consentFlags');
         if (!profile) {
             return res.status(404).json({ message: 'User not found' });
         }
         res.status(200).json(profile);
     } catch (error) {
-        res.status(500).json({ message: 'Server error' });
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+};
+
+// @desc    Update a user's profile (e.g., username)
+// @route   PUT /api/v1/auth/profile
+// @access  Private
+exports.updateProfile = async (req, res) => {
+    try {
+        const { username } = req.body;
+        const user = await User.findById(req.user._id);
+
+        if (username) {
+            // Check if the new username is already taken by someone else
+            const existingUsername = await User.findOne({ username });
+            if (existingUsername && existingUsername._id.toString() !== user._id.toString()) {
+                return res.status(400).json({ message: 'This username is already taken.' });
+            }
+            user.username = username;
+        }
+
+        const updatedUser = await user.save();
+        res.status(200).json({
+            success: true,
+            username: updatedUser.username,
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Server Error' });
     }
 };
 

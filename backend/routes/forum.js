@@ -1,7 +1,6 @@
 // routes/forum.js
 const express = require('express');
 const router = express.Router();
-// 1. Import the new functions
 const { 
     createPost, 
     getAllPosts,
@@ -10,18 +9,17 @@ const {
 } = require('../controllers/forumController');
 const { protect } = require('../middleware/authMiddleware');
 
-// All forum routes require a user to be logged in
-router.use(protect);
+// --- PUBLIC ROUTES (for guests and logged-in users) ---
+// Anyone can view all posts
+router.get('/posts', getAllPosts);
+// Anyone can view a single post with its comments
+router.get('/posts/:postId', getPostWithComments);
 
-router.route('/posts')
-    .post(createPost)
-    .get(getAllPosts);
 
-// 2. Add routes for a single post and its comments
-router.route('/posts/:postId')
-    .get(getPostWithComments);
-
-router.route('/posts/:postId/comments')
-    .post(addComment);
+// --- PRIVATE ROUTES (require a user to be logged in) ---
+// You must be logged in to create a post
+router.post('/posts', protect, createPost);
+// You must be logged in to add a comment
+router.post('/posts/:postId/comments', protect, addComment);
 
 module.exports = router;
