@@ -30,12 +30,24 @@ const userSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
+      
+    isVerified: {
+      type: Boolean,
+      default: false,
+    },
+
+    verificationToken: String,
+
     password: {
       type: String,
       required: true,
       minlength: 6,
       select: false,
     },
+    
+    passwordResetToken: String,
+    passwordResetExpires: Date,
+
     pushToken: {
       type: String,
     },
@@ -52,6 +64,8 @@ const userSchema = new mongoose.Schema(
     // REMOVED: closeContacts is now a frontend-only feature
     emergencyContacts: [EncryptedContact],
   },
+
+  
   {
     timestamps: true,
   }

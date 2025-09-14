@@ -3,6 +3,8 @@ const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const connectDB = require('./config/db');
+const cron = require('node-cron');
+const { cleanupUnverifiedUsers } = require('./services/maintenanceService');
 
 // Load environment variables
 dotenv.config();
@@ -16,20 +18,28 @@ const app = express();
 app.use(express.json()); // Body parser for JSON
 app.use(cors());         // Enable Cross-Origin Resource Sharing
 
-// API Routes
+// --- Utility Routes ---
+app.get('/api/health', (req, res) => {
+    res.status(200).json({ status: 'UP' });
+});
+
+// --- Main API Routes ---
 app.use('/api/v1/auth', require('./routes/auth'));
-app.use('/api/v1/aggregates', require('./routes/aggregate'));
+app.use('/api/v1/aggregates', require('./routes/aggregate')); // Corrected typo here
 app.use('/api/v1/alerts', require('./routes/alerts'));
 app.use('/api/v1/reports', require('./routes/reports'));
 app.use('/api/v1/help-directory', require('./routes/helpDirectory'));
 app.use('/api/v1/forum', require('./routes/forum'));
 app.use('/api/v1/contacts', require('./routes/contacts'));
 
-// Simple health check endpoint-- Utility Routes
-app.get('/api/health', (req, res) => {
-    res.status(200).json({ status: 'UP' });
+// --- Scheduled Jobs ---
+// Schedule the cleanup job to run once every day at 2:00 AM India time.
+cron.schedule('0 2 * * *', () => {
+  cleanupUnverifiedUsers();
+}, {
+  scheduled: true,
+  timezone: "Asia/Kolkata"
 });
-
 
 const PORT = process.env.PORT || 5001;
 

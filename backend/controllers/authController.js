@@ -3,55 +3,76 @@ const User = require('../models/User');
 const Aggregate = require('../models/Aggregate');
 const Alert = require('../models/Alert');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const sendEmail = require('../utils/sendEmail');
 
 
-// @desc    Register a new user
+// @desc    Register a new user and send verification email
 // @route   POST /api/v1/auth/register
 exports.register = async (req, res) => {
-  try {
-    const { email, password, username } = req.body;
+    try {
+        const { email, password, username } = req.body;
 
-    if (!email || !password || !username) {
-      return res.status(400).json({ message: "Email, password, and username are required" });
-    }
-    // Add validation for username
-    if (username.length < 3) {
-        return res.status(400).json({ message: "Username must be at least 3 characters" });
-    }
-    // Check if username is already taken
-    const existingUsername = await User.findOne({ username });
-    if (existingUsername) {
-        return res.status(400).json({ message: "This username is already taken" });
-    }
-    if (password.length < 6) {
-        return res.status(400).json({ message: "Password must be at least 6 characters" });
-    }
+        // --- 1. Validation ---
+        if (!email || !password || !username) {
+            return res.status(400).json({ message: "Email, password, and username are required" });
+        }
+        if (username.length < 3) {
+            return res.status(400).json({ message: "Username must be at least 3 characters" });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({ message: "Password must be at least 6 characters" });
+        }
+        const existingUsername = await User.findOne({ username });
+        if (existingUsername) {
+            return res.status(400).json({ message: "This username is already taken" });
+        }
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ message: "User with this email already exists" });
+        }
 
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ message: "User with this email already exists" });
+        // --- 2. Create User (as unverified) ---
+        const user = await User.create({ email, password, username });
+
+        // --- 3. Generate and Save Verification Token ---
+        const verificationToken = crypto.randomBytes(20).toString('hex');
+        user.verificationToken = crypto.createHash('sha256').update(verificationToken).digest('hex');
+        await user.save({ validateBeforeSave: false }); // Save the token without running all validators again
+
+        // --- 4. Send Verification Email ---
+        const verificationUrl = `${req.protocol}://${req.get('host')}/api/v1/auth/verifyemail/${verificationToken}`;
+        const message = `Thank you for registering with Equilibrium! Please click the following link to verify your email address and complete your registration:\n\n${verificationUrl}`;
+
+        try {
+            await sendEmail({
+                email: user.email,
+                subject: 'Equilibrium Account Verification',
+                message
+            });
+
+            // --- 5. Send Final Response to User ---
+            res.status(201).json({
+                success: true,
+                message: 'Registration successful. A verification email has been sent to your address.'
+            });
+
+        } catch (err) {
+            // If the email fails to send, we should not keep the user in a broken state.
+            // For a production app, we'd add more robust retry logic here.
+            await User.deleteOne({ _id: user._id }); // Clean up the user if email fails
+            return res.status(500).json({ success: false, message: 'Email could not be sent. Please try registering again.' });
+        }
+
+    } catch (error) {
+        res.status(500).json({ message: "Server error during registration", error: error.message });
     }
-
-    // Create user with only the essential fields. Consent is handled separately.
-    const user = await User.create({ email, password,username});
-
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
-
-    // In the response, we only send back the non-sensitive ID
-    res.status(201).json({
-      token,
-      userId: user._id, // The frontend will need this for subsequent requests
-      pseudonymId: user.pseudonymId,
-      username: user.username
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Server error during registration", error: error.message });
-  }
 };
 
 
 // @desc    Login user
 // @route   POST /api/v1/auth/login
+// @access  Public
 exports.login = async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -62,17 +83,24 @@ exports.login = async (req, res) => {
 
         const user = await User.findOne({ email }).select('+password');
         if (!user) {
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(401).json({ success: false, message: "Invalid credentials" });
         }
+
+        // --- THIS IS THE NEW, CRUCIAL CHECK ---
+        if (!user.isVerified) {
+            return res.status(401).json({ success: false, message: "Please verify your email address before logging in." });
+        }
+        // -----------------------------------------
 
         const isMatch = await user.matchPassword(password);
         if (!isMatch) {
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(401).json({ success: false, message: "Invalid credentials" });
         }
 
         const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
         res.status(200).json({
+            success: true,
             token,
             userId: user._id,
             pseudonymId: user.pseudonymId
@@ -289,4 +317,131 @@ exports.deleteUserAccount = async (req, res) => {
     console.error('Error deleting user account:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
   }
+};
+
+// @desc    Log user out
+// @route   POST /api/v1/auth/logout
+// @access  Private
+exports.logout = async (req, res) => {
+    // In a stateless JWT system, the main logout logic is on the client (deleting the token).
+    // This endpoint is here for good practice.
+    res.status(200).json({ success: true, message: 'Logged out successfully.' });
+};
+
+// @desc    Forgot password
+// @route   POST /api/v1/auth/forgotpassword
+exports.forgotPassword = async (req, res) => {
+    const user = await User.findOne({ email: req.body.email });
+    if (!user) {
+        return res.status(404).json({ success: false, message: 'There is no user with that email.' });
+    }
+
+    // 1. Generate a random reset token
+    const resetToken = crypto.randomBytes(20).toString('hex');
+
+    // 2. Hash token and set to user model
+    user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+    user.passwordResetExpires = Date.now() + 10 * 60 * 1000; // Expires in 10 minutes
+
+    await user.save();
+
+    // 3. Create reset URL and send email
+    const resetUrl = `${req.protocol}://${req.get('host')}/resetpassword/${resetToken}`;
+    const message = `You are receiving this email because you (or someone else) has requested the reset of a password. Please make a PUT request to: \n\n ${resetUrl}`;
+
+    try {
+        await sendEmail({
+            email: user.email,
+            subject: 'Password Reset Token',
+            message
+        });
+        res.status(200).json({ success: true, data: 'Email sent' });
+    } catch (err) {
+        user.passwordResetToken = undefined;
+        user.passwordResetExpires = undefined;
+        await user.save();
+        return res.status(500).json({ success: false, message: 'Email could not be sent' });
+    }
+};
+
+// @desc    Reset password
+// @route   PUT /api/v1/auth/resetpassword/:resettoken
+exports.resetPassword = async (req, res) => {
+    const resetToken = crypto.createHash('sha256').update(req.params.resettoken).digest('hex');
+    const user = await User.findOne({
+        passwordResetToken: resetToken,
+        passwordResetExpires: { $gt: Date.now() } // $gt means "greater than"
+    });
+
+    if (!user) {
+        return res.status(400).json({ success: false, message: 'Invalid or expired token.' });
+    }
+
+    // Set new password
+    user.password = req.body.password;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save();
+
+    // (Optional) Send a new JWT token for immediate login
+    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
+    res.status(200).json({ success: true, token });
+};
+
+// @desc    Change password for a logged-in user
+// @route   POST /api/v1/auth/changepassword
+// @access  Private
+exports.changePassword = async (req, res) => {
+    try {
+        const { oldPassword, newPassword } = req.body;
+
+        if (!oldPassword || !newPassword) {
+            return res.status(400).json({ success: false, message: 'Please provide both old and new passwords.' });
+        }
+
+        // 1. Get user from database, making sure to select the password field
+        const user = await User.findById(req.user._id).select('+password');
+
+        // 2. Check if the provided old password is correct
+        const isMatch = await user.matchPassword(oldPassword);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: 'Incorrect old password.' });
+        }
+
+        // 3. Set the new password and save. The pre-save hook will hash it automatically.
+        user.password = newPassword;
+        await user.save();
+
+        res.status(200).json({ success: true, message: 'Password updated successfully.' });
+
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Server Error' });
+    }
+};
+
+// @desc    Verify email
+// @route   GET /api/v1/auth/verifyemail/:token
+exports.verifyEmail = async (req, res) => {
+    try {
+        const verificationToken = crypto.createHash('sha256').update(req.params.token).digest('hex');
+
+        const user = await User.findOne({ verificationToken });
+
+        if (!user) {
+            return res.status(400).json({ success: false, message: 'Invalid verification token.' });
+        }
+
+        // Mark user as verified and clear the token
+        user.isVerified = true;
+        user.verificationToken = undefined;
+        await user.save({ validateBeforeSave: false });
+
+        // Send back a JWT token for immediate login
+        // CORRECTED: Changed user._-id to user._id
+        const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
+        
+        res.status(200).json({ success: true, message: 'Email verified successfully.', token });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Server Error' });
+    }
 };
