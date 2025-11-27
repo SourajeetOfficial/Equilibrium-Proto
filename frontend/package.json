@@ -51,7 +51,8 @@
     "react-native-web": "^0.21.0"
   },
   "devDependencies": {
-    "@babel/core": "^7.26.0"
+    "@babel/core": "^7.26.0",
+    "baseline-browser-mapping": "^2.8.31"
   },
   "private": true
 }
