@@ -10,6 +10,10 @@ const STORAGE_KEYS = {
   APP_USAGE: "app_usage",
   USER_PREFERENCES: "user_preferences",
   CONSENT_DATA: "consent_data",
+  SLEEP_WINDOW: "sleep_window",
+  SLEEP_PREFERENCES: "sleep_preferences", // ✅ NEW: User's sleep tracking preference
+  FITNESS_SLEEP_DATA: "fitness_sleep_data", // ✅ NEW: Sleep from fitness band
+  SCREEN_SLEEP_DATA: "screen_sleep_data", // ✅ NEW: Sleep from screen usage estimation
 };
 
 class LocalStorageService {
@@ -19,6 +23,8 @@ class LocalStorageService {
   }
 
   async initialize() {
+    if (this.initialized) return;
+
     try {
       this.encryptionKey = await this.getOrCreateDeviceKey();
       this.initialized = true;
@@ -58,38 +64,37 @@ class LocalStorageService {
     }
   }
 
-// 🔐 Encryption helpers
-encrypt(data) {
-  try {
-    const key = CryptoJS.enc.Hex.parse(this.encryptionKey)  // use WordArray
-    const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32)) // derive IV
-    return CryptoJS.AES.encrypt(
-      JSON.stringify(data),
-      key,
-      { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
-    ).toString()
-  } catch (error) {
-    console.error("Encryption error:", error)
-    return null
+  // 🔐 Encryption helpers
+  encrypt(data) {
+    try {
+      const key = CryptoJS.enc.Hex.parse(this.encryptionKey)
+      const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32))
+      return CryptoJS.AES.encrypt(
+        JSON.stringify(data),
+        key,
+        { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
+      ).toString()
+    } catch (error) {
+      console.error("Encryption error:", error)
+      return null
+    }
   }
-}
 
-decrypt(encryptedData) {
-  try {
-    const key = CryptoJS.enc.Hex.parse(this.encryptionKey)
-    const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32))
-    const bytes = CryptoJS.AES.decrypt(encryptedData, key, {
-      iv: iv,
-      mode: CryptoJS.mode.CBC,
-      padding: CryptoJS.pad.Pkcs7,
-    })
-    return JSON.parse(bytes.toString(CryptoJS.enc.Utf8))
-  } catch (error) {
-    console.error("Decryption error:", error)
-    return null
+  decrypt(encryptedData) {
+    try {
+      const key = CryptoJS.enc.Hex.parse(this.encryptionKey)
+      const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32))
+      const bytes = CryptoJS.AES.decrypt(encryptedData, key, {
+        iv: iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7,
+      })
+      return JSON.parse(bytes.toString(CryptoJS.enc.Utf8))
+    } catch (error) {
+      console.error("Decryption error:", error)
+      return null
+    }
   }
-}
-
 
   // 📦 Generic storage methods
   async setItem(key, value, encrypt = true) {
@@ -203,6 +208,127 @@ decrypt(encryptedData) {
     }
   }
 
+  // -----------------------------
+  // 🛌 Sleep window (time range for estimation)
+  // -----------------------------
+  async saveSleepWindow(window) {
+    return this.setItem(STORAGE_KEYS.SLEEP_WINDOW, window);
+  }
+
+  async getSleepWindow() {
+    return this.getItem(STORAGE_KEYS.SLEEP_WINDOW);
+  }
+
+  // -----------------------------
+  // 🎯 Sleep tracking preferences
+  // -----------------------------
+  async saveSleepPreferences(preferences) {
+    try {
+      // preferences = { mode: "screen_usage" | "fitness_band", fitnessConnected: boolean }
+      await this.setItem(STORAGE_KEYS.SLEEP_PREFERENCES, preferences);
+      return true;
+    } catch (error) {
+      console.error("Save sleep preferences error:", error);
+      return false;
+    }
+  }
+
+  async getSleepPreferences() {
+    try {
+      return (await this.getItem(STORAGE_KEYS.SLEEP_PREFERENCES)) || {
+        mode: "screen_usage",
+        fitnessConnected: false,
+      };
+    } catch (error) {
+      console.error("Get sleep preferences error:", error);
+      return { mode: "screen_usage", fitnessConnected: false };
+    }
+  }
+
+  // -----------------------------
+  // 💪 Fitness band sleep data storage
+  // -----------------------------
+  async saveFitnessSleepData(date, sleepData) {
+    try {
+      const fitnessData = (await this.getItem(STORAGE_KEYS.FITNESS_SLEEP_DATA)) || {};
+      fitnessData[date] = {
+        ...sleepData,
+        source: "fitness_band",
+        timestamp: new Date().toISOString(),
+      };
+      await this.setItem(STORAGE_KEYS.FITNESS_SLEEP_DATA, fitnessData);
+      return true;
+    } catch (error) {
+      console.error("Save fitness sleep data error:", error);
+      return false;
+    }
+  }
+
+  async getFitnessSleepData(days = 30) {
+    try {
+      const fitnessData = (await this.getItem(STORAGE_KEYS.FITNESS_SLEEP_DATA)) || {};
+      const sortedDates = Object.keys(fitnessData).sort().reverse();
+      return sortedDates.slice(0, days).map((date) => ({
+        date,
+        ...fitnessData[date],
+      }));
+    } catch (error) {
+      console.error("Get fitness sleep data error:", error);
+      return [];
+    }
+  }
+
+  // -----------------------------
+  // 📱 Screen usage sleep estimation data storage
+  // -----------------------------
+  async saveScreenUsageSleepData(date, sleepData) {
+    try {
+      const screenData = (await this.getItem(STORAGE_KEYS.SCREEN_SLEEP_DATA)) || {};
+      screenData[date] = {
+        ...sleepData,
+        source: "screen_usage",
+        timestamp: new Date().toISOString(),
+      };
+      await this.setItem(STORAGE_KEYS.SCREEN_SLEEP_DATA, screenData);
+      return true;
+    } catch (error) {
+      console.error("Save screen sleep data error:", error);
+      return false;
+    }
+  }
+
+  async getScreenUsageSleepData(days = 30) {
+    try {
+      const screenData = (await this.getItem(STORAGE_KEYS.SCREEN_SLEEP_DATA)) || {};
+      const sortedDates = Object.keys(screenData).sort().reverse();
+      return sortedDates.slice(0, days).map((date) => ({
+        date,
+        ...screenData[date],
+      }));
+    } catch (error) {
+      console.error("Get screen sleep data error:", error);
+      return [];
+    }
+  }
+
+  // -----------------------------
+  // 🎯 Get active sleep data based on preference
+  // -----------------------------
+  async getActiveSleepData(days = 30) {
+    try {
+      const preferences = await this.getSleepPreferences();
+      
+      if (preferences.mode === "fitness_band" && preferences.fitnessConnected) {
+        return await this.getFitnessSleepData(days);
+      } else {
+        return await this.getScreenUsageSleepData(days);
+      }
+    } catch (error) {
+      console.error("Get active sleep data error:", error);
+      return [];
+    }
+  }
+
   // 📊 App usage tracking
   async saveAppUsage(date, usageData) {
     try {
@@ -289,7 +415,7 @@ decrypt(encryptedData) {
     try {
       const data = {};
       for (const [key, storageKey] of Object.entries(STORAGE_KEYS)) {
-        if (key === "ENCRYPTION_KEY") continue; // don’t export secret key
+        if (key === "ENCRYPTION_KEY") continue; // don't export secret key
         data[key] = await this.getItem(storageKey);
       }
       return data;

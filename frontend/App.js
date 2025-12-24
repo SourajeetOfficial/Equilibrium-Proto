@@ -33,6 +33,7 @@ import ForgotPasswordScreen from "./screens/ForgotPasswordScreen"
 import authService from "./services/authService"
 import behavioralTrackingService from "./services/behavioralTrackingService"
 import notificationService from "./services/notificationService"
+import localStorageService from './services/localStorageService';
 
 const Tab = createBottomTabNavigator()
 const Stack = createStackNavigator()
@@ -167,6 +168,7 @@ export default function App() {
 
   const initializeApp = async () => {
     try {
+      await localStorageService.initialize();
       const authInitialized = await authService.initializeAuth()
       setIsAuthenticated(authInitialized)
 
