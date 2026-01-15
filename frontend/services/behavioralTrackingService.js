@@ -175,19 +175,20 @@ class BehavioralTrackingService {
       const screenTimeMinutes = Math.round((usage.totalScreenTime || 0) / 60);
 
       // Get sleep data based on user preference
-      const sleepData = await this.getSleepData(screenTimeMinutes);
+      const sleepData = await this.getSleepDataFromUsage(usage)
+
 
       // Save screen usage sleep estimation
       if (sleepData.source === "inactivity") {
-        const today = new Date().toISOString().split("T")[0];
+        const today = new Date().toISOString().split("T")[0]
         await localStorageService.saveScreenUsageSleepData(today, {
           estimatedSleepMinutes: sleepData.estimatedSleepMinutes,
           estimatedSleepHours: sleepData.estimatedSleepMinutes / 60,
           confidence: sleepData.confidence,
-          screenTimeMinutes,
           sleepWindow: this.getEffectiveSleepWindow(),
         });
       }
+
 
       return {
         screenTimeMinutes,
@@ -221,29 +222,19 @@ class BehavioralTrackingService {
   // -----------------------------
   // Sleep Resolution (Priority System)
   // -----------------------------
-  async getSleepData(totalScreenTimeMinutes) {
-    // Check user preference first
-    const sleepPrefs = await localStorageService.getSleepPreferences();
+  async getSleepDataFromUsage(usage) {
+    const prefs = await localStorageService.getSleepPreferences()
 
-    // 1️⃣ Priority: Fitness Band (Health Connect) if user chose this mode
-    if (sleepPrefs.mode === "fitness_band" && sleepPrefs.fitnessConnected) {
-      const healthConnectData = await this.getHealthConnectSleepData();
-      if (healthConnectData) {
-        // Save fitness sleep data
-        const today = new Date().toISOString().split("T")[0];
-        await localStorageService.saveFitnessSleepData(today, {
-          sleepMinutes: healthConnectData.durationMinutes,
-          sleepHours: healthConnectData.durationMinutes / 60,
-          confidence: healthConnectData.confidence,
-          stages: healthConnectData.stages,
-        });
-        return healthConnectData;
-      }
+    // Priority 1: Fitness band
+    if (prefs.mode === "fitness_band" && prefs.fitnessConnected) {
+      const hc = await this.getHealthConnectSleepData()
+      if (hc) return hc
     }
 
-    // 2️⃣ Fallback: Screen Usage Estimation
-    return this.calculateSleepData(totalScreenTimeMinutes);
+    // Fallback: inactivity-based estimation
+    return this.calculateSleepDataFromEvents(usage.events)
   }
+
 
   // -----------------------------
   // Health Connect Sleep Data
@@ -297,31 +288,63 @@ class BehavioralTrackingService {
   // -----------------------------
   // Sleep Estimation (Inactivity-based)
   // -----------------------------
-  calculateSleepData(totalScreenTimeMinutes) {
-    const today = new Date().toISOString().split("T")[0];
-    const { start, end } = this.getEffectiveSleepWindow();
+  calculateSleepDataFromEvents(events = []) {
+    if (!events.length) {
+      return {
+        source: "inactivity",
+        estimatedSleepMinutes: 0,
+        confidence: 0,
+      }
+    }
 
-    const [sh, sm] = start.split(":").map(Number);
-    const [eh, em] = end.split(":").map(Number);
+    const { start, end } = this.getEffectiveSleepWindow()
 
-    const sleepStart = new Date(today);
-    sleepStart.setHours(sh, sm, 0, 0);
+    const today = new Date().toISOString().split("T")[0]
+    const [sh, sm] = start.split(":").map(Number)
+    const [eh, em] = end.split(":").map(Number)
 
-    const sleepEnd = new Date(today);
-    sleepEnd.setHours(eh, em, 0, 0);
-    if (sleepEnd <= sleepStart) sleepEnd.setDate(sleepEnd.getDate() + 1);
+    const windowStart = new Date(today)
+    windowStart.setHours(sh, sm, 0, 0)
 
-    const windowMinutes = (sleepEnd - sleepStart) / 60000;
+    const windowEnd = new Date(today)
+    windowEnd.setHours(eh, em, 0, 0)
+    if (windowEnd <= windowStart) windowEnd.setDate(windowEnd.getDate() + 1)
+
+    const sorted = events
+      .map(e => ({ ...e, time: new Date(e.timestamp) }))
+      .filter(e => e.time >= windowStart && e.time <= windowEnd)
+      .sort((a, b) => a.time - b.time)
+
+    let sleepMinutes = 0
+    let lastActive = windowStart
+
+    for (const ev of sorted) {
+      const gap = (ev.time - lastActive) / 60000
+
+      // Only count sleep AFTER 30 min inactivity
+      if (gap >= 30) {
+        sleepMinutes += (gap - 30)
+      }
+
+      // Any interaction resets sleep
+      lastActive = ev.time
+    }
+
+    const tailGap = (windowEnd - lastActive) / 60000
+    if (tailGap >= 30) {
+      sleepMinutes += (tailGap - 30)
+    }
+
+    sleepMinutes = Math.max(0, Math.min(sleepMinutes, (windowEnd - windowStart) / 60000))
 
     return {
       source: "inactivity",
-      estimatedSleepMinutes: Math.max(
-        0,
-        Math.round(windowMinutes - totalScreenTimeMinutes)
-      ),
-      confidence: 0.6,
-    };
+      estimatedSleepMinutes: Math.round(sleepMinutes),
+      confidence: Math.min(0.85, sleepMinutes / ((windowEnd - windowStart) / 60000)),
+    }
   }
+
+
 
   // -----------------------------
   // Helper: Get Sleep Summary for Reports
