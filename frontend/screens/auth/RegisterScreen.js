@@ -27,6 +27,8 @@ export default function RegisterScreen({ navigation }) {
     confirmPassword: "",
     consentGiven: false,
   })
+  const [passwordMatch, setPasswordMatch] = useState(true)
+  const [consentError, setConsentError] = useState(false)
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
@@ -37,6 +39,16 @@ export default function RegisterScreen({ navigation }) {
     hasNumber: false,
     hasSpecialChar: false,
   })
+
+  const ALLOWED_EMAIL_DOMAINS = [
+    "gmail.com",
+    "outlook.com",
+    "hotmail.com",
+    "yahoo.com",
+    "icloud.com",
+    "proton.me",
+    "protonmail.com",
+  ]
 
   const checkPasswordStrength = (password) => {
     setPasswordValidation({
@@ -65,11 +77,30 @@ export default function RegisterScreen({ navigation }) {
   }
 
   const handleInputChange = (field, value) => {
-    setFormData((prev) => ({ ...prev, [field]: value }))
-    if (field === "password") {
-      checkPasswordStrength(value)
-    }
+    setFormData((prev) => {
+      const updated = { ...prev, [field]: value }
+
+      if (field === "password") {
+        checkPasswordStrength(value)
+        setPasswordMatch(
+          value === updated.confirmPassword || updated.confirmPassword.length === 0
+        )
+      }
+
+      if (field === "confirmPassword") {
+        setPasswordMatch(
+          value === updated.password || value.length === 0
+        )
+      }
+
+      if (field === "consentGiven") {
+        setConsentError(false)
+      }
+
+      return updated
+    })
   }
+
 
   const validateForm = () => {
     const usernameError = validateUsername(formData.username.trim())
@@ -78,13 +109,24 @@ export default function RegisterScreen({ navigation }) {
       return false
     }
 
-    if (!formData.email.trim()) {
+    const email = formData.email.trim().toLowerCase()
+
+    if (!email) {
       Alert.alert("Validation Error", "Please enter your email address")
       return false
     }
 
-    if (!formData.email.includes("@")) {
-      Alert.alert("Validation Error", "Please enter a valid email address")
+    const emailParts = email.split("@")
+    if (emailParts.length !== 2) {
+      Alert.alert("Validation Error", "Invalid email format")
+      return false
+    }
+
+    if (!ALLOWED_EMAIL_DOMAINS.includes(emailParts[1])) {
+      Alert.alert(
+        "Validation Error",
+        "Please use a supported email provider (Gmail, Outlook, Yahoo, etc.)"
+      )
       return false
     }
     
@@ -94,13 +136,13 @@ export default function RegisterScreen({ navigation }) {
       return false
     }
 
-    if (formData.password !== formData.confirmPassword) {
+    if (!passwordMatch) {
       Alert.alert("Validation Error", "Passwords do not match")
       return false
     }
 
     if (!formData.consentGiven) {
-      Alert.alert("Consent Required", "Please agree to our privacy policy to continue")
+      setConsentError(true)
       return false
     }
 
@@ -246,6 +288,18 @@ export default function RegisterScreen({ navigation }) {
                     secureTextEntry={!showConfirmPassword}
                     autoCapitalize="none"
                   />
+                  {!passwordMatch && (
+                    <Text
+                      style={{
+                        color: "#ef4444",
+                        fontSize: 12,
+                        marginTop: 4,
+                        paddingLeft: 16,
+                      }}
+                    >
+                      Passwords do not match
+                    </Text>
+                  )}
                   <TouchableOpacity
                     onPress={() => setShowConfirmPassword(!showConfirmPassword)}
                     style={styles.eyeButton}
@@ -264,10 +318,10 @@ export default function RegisterScreen({ navigation }) {
                 style={styles.consentContainer}
                 onPress={() => handleInputChange("consentGiven", !formData.consentGiven)}
               >
-                <View style={[styles.checkbox, formData.consentGiven && styles.checkboxChecked]}>
+                <View style={[styles.checkbox, formData.consentGiven && styles.checkboxChecked, consentError && !formData.consentGiven && { borderColor: "#ef4444" }]}>
                   {formData.consentGiven && <Ionicons name="checkmark" size={16} color="#ffffff" />}
                 </View>
-                <Text style={styles.consentText}>
+                <Text style={[styles.consentText, consentError && !formData.consentGiven && { color: "#ef4444" }]}>
                   I agree to the <Text style={styles.consentLink}>Privacy Policy</Text> and{" "}
                   <Text style={styles.consentLink}>Terms of Service</Text>
                 </Text>
