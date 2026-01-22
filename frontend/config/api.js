@@ -1,10 +1,11 @@
 import axios from "axios"
 import { Platform } from "react-native"
 import AsyncStorage from "@react-native-async-storage/async-storage"
+import { LOCAL_IP } from "@env"
 
-// For local development - Replace with your computer's IP address
-const LOCAL_IP = "192.168.29.137" // Change this to your computer's IP
-const API_BASE_URL = Platform.OS === "ios" ? `http://localhost:3000/api/v1` : `http://${LOCAL_IP}:3000/api/v1`
+// For local development - IP from environment variable
+const localIP = LOCAL_IP 
+const API_BASE_URL = Platform.OS === "ios" ? `http://localhost:3000/api/v1` : `http://${localIP}:3000/api/v1`
 
 // For production - Replace with your actual API URL
 const PRODUCTION_API_URL = "https://your-production-domain.com/api/v1"
