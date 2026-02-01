@@ -11,9 +11,11 @@ const STORAGE_KEYS = {
   USER_PREFERENCES: "user_preferences",
   CONSENT_DATA: "consent_data",
   SLEEP_WINDOW: "sleep_window",
-  SLEEP_PREFERENCES: "sleep_preferences", // ✅ NEW: User's sleep tracking preference
-  FITNESS_SLEEP_DATA: "fitness_sleep_data", // ✅ NEW: Sleep from fitness band
-  SCREEN_SLEEP_DATA: "screen_sleep_data", // ✅ NEW: Sleep from screen usage estimation
+  SLEEP_PREFERENCES: "sleep_preferences", 
+  FITNESS_SLEEP_DATA: "fitness_sleep_data",
+  SCREEN_SLEEP_DATA: "screen_sleep_data", 
+  ACTIVITY_DATA: "activity_data",
+  MANUAL_ACTIVITY: "manual_activity",
 };
 
 class LocalStorageService {
@@ -357,6 +359,33 @@ class LocalStorageService {
       console.error("Get app usage error:", error);
       return [];
     }
+  }
+
+  // 🏃 Physical activity
+  async saveActivityData(date, data) {
+    const store = (await this.getItem(STORAGE_KEYS.ACTIVITY_DATA)) || {}
+    store[date] = { ...data, timestamp: new Date().toISOString() }
+    await this.setItem(STORAGE_KEYS.ACTIVITY_DATA, store)
+  }
+
+  async getActivityData(days = 7) {
+    const store = (await this.getItem(STORAGE_KEYS.ACTIVITY_DATA)) || {}
+    return Object.keys(store)
+      .sort()
+      .reverse()
+      .slice(0, days)
+      .map(d => ({ date: d, ...store[d] }))
+  }
+
+  async saveManualActivity(date, minutes) {
+    const store = (await this.getItem(STORAGE_KEYS.MANUAL_ACTIVITY)) || {}
+    store[date] = minutes
+    await this.setItem(STORAGE_KEYS.MANUAL_ACTIVITY, store)
+  }
+
+  async getManualActivity(date) {
+    const store = (await this.getItem(STORAGE_KEYS.MANUAL_ACTIVITY)) || {}
+    return store[date] || 0
   }
 
   // ⚙️ User preferences

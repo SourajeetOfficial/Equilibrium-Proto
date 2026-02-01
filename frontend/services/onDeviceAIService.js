@@ -102,7 +102,7 @@ class OnDeviceAIService {
   // Calculate wellness score based on multiple factors
   calculateWellnessScore(metrics) {
     try {
-      const { sleepHours = 7, moodScore = 3, screenTimeMinutes = 240, activityMinutes = 30, stressLevel = 3 } = metrics
+      const { sleepHours = 7, moodScore = 3, screenTimeMinutes = 240, activityMinutes = 0} = metrics
 
       // Sleep score (0-25 points)
       let sleepScore = 0

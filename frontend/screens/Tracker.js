@@ -156,20 +156,23 @@ export default function Tracker({ navigation }) {
             bgColor: "#e0e7ff",
           },
           {
+            icon: "walk",
+            value: usageStats.activityMinutes
+              ? `${usageStats.activityMinutes}m`
+              : "Not tracked",
+            label: "Activity",
+            color: "#3b82f6",
+            bgColor: "#dbeafe",
+          },
+          {
             icon: "phone-portrait",
             value: totalUsageMinutes > 0 ? formatDuration(totalUsageMinutes): "Not tracked",
             label: "Screen",
             color: "#10b981",
             bgColor: "#d1fae5",
           },
-          {
-            icon: "trending-up",
-            value: todayWellness?.wellnessScore ? `${todayWellness.wellnessScore}%` : "Not tracked",
-            label: "Score",
-            color: "#f59e0b",
-            bgColor: "#fef3c7",
-          },
         ],
+        activity: usageStats.activityMinutes || 0,
         sleepData: {
           hours: sleepHours,
           source: sleepSource,
@@ -434,6 +437,32 @@ export default function Tracker({ navigation }) {
 
           {/* Sleep Tracking - Dynamic based on mode */}
           {renderSleepCard()}
+
+          {/* Physical Activity */}
+          <View style={styles.trackingCard}>
+            <View style={styles.cardHeader}>
+              <View style={styles.cardTitleContainer}>
+                <Ionicons name="walk" size={20} color="#10b981" />
+                <Text style={styles.cardTitle}>Physical Activity</Text>
+              </View>
+            </View>
+
+            <View style={styles.cardContent}>
+              <View style={[styles.dataRow, { backgroundColor: "#ecfdf5" }]}>
+                <Text style={styles.dataLabel}>Active today</Text>
+                <Text style={[styles.dataValue, { color: "#10b981" }]}>
+                  {data.activity > 0
+                    ? `${data.activity} min`
+                    : "Not tracked"}
+                </Text>
+              </View>
+
+              <TouchableOpacity style={styles.logButton}>
+                <Ionicons name="add-circle" size={16} color="#10b981" />
+                <Text style={styles.logButtonText}>Add Activity Manually</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
 
           {/* Digital Wellness */}
           <View style={styles.trackingCard}>

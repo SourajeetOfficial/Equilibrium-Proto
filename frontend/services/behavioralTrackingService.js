@@ -5,7 +5,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import authService from "./authService";
 import localStorageService from "./localStorageService";
 
-const { UsageStatsModule, HealthConnectModule } = NativeModules;
+const { UsageStatsModule, HealthConnectModule, ActivityRecognitionModule } = NativeModules;
 
 class BehavioralTrackingService {
   constructor() {
@@ -111,11 +111,41 @@ class BehavioralTrackingService {
   }
 
   // -----------------------------
+  // Physical Activity (Device-based)
+  // -----------------------------
+
+  async getTodayActivityMinutes() {
+    const today = new Date().toISOString().split("T")[0]
+
+    // 1️⃣ Manual override
+    const manual = await localStorageService.getManualActivity(today)
+    if (manual > 0) return manual
+
+    // 2️⃣ Sensor-based
+    if (Platform.OS === "android" && ActivityRecognitionModule) {
+      try {
+        const granted = await ActivityRecognitionModule.requestPermission()
+        if (granted) {
+          const minutes = await ActivityRecognitionModule.getTodayActivityMinutes()
+          await localStorageService.saveActivityData(today, {
+            minutes,
+            source: "sensor"
+          })
+          return minutes
+        }
+      } catch {}
+    }
+
+    return 0
+  }
+
+  // -----------------------------
   // Initialization
   // -----------------------------
   async initializeTracking() {
     await this.loadUserSleepWindow();
-
+    await ActivityRecognitionModule?.startTracking?.()
+    
     const user = authService.getCurrentUser();
     if (!user?.consentFlags?.usageTracking) return;
 
@@ -177,6 +207,8 @@ class BehavioralTrackingService {
       // Get sleep data based on user preference
       const sleepData = await this.getSleepDataFromUsage(usage)
 
+      const activityMinutes = await this.getTodayActivityMinutes()
+
 
       // Save screen usage sleep estimation
       if (sleepData.source === "inactivity") {
@@ -193,6 +225,7 @@ class BehavioralTrackingService {
       return {
         screenTimeMinutes,
         pickupCount: usage.pickupCount || 0,
+        activityMinutes,
         appUsage: apps.map(app => ({
           appName: app.appName || app.package,
           package: app.package,
@@ -210,6 +243,7 @@ class BehavioralTrackingService {
     return {
       screenTimeMinutes: 0,
       pickupCount: 0,
+      activityMinutes: 0,
       appUsage: [],
       sleepData: {
         source: "none",
