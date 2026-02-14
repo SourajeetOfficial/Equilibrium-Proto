@@ -15,6 +15,7 @@ import {
 import DateTimePicker from "@react-native-community/datetimepicker"
 import { LinearGradient } from "expo-linear-gradient"
 import { Ionicons } from "@expo/vector-icons"
+import Svg, { Circle } from "react-native-svg"
 import SafeAreaWrapper from "../components/SafeAreaWrapper"
 import localStorageService from "../services/localStorageService"
 import behavioralTrackingService from "../services/behavioralTrackingService"
@@ -25,13 +26,13 @@ export default function Tracker({ navigation }) {
     sleepData: [],
     digitalData: [],
     appUsage: [],
-    insights: [],
+    activityData: null,
   });
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false);
 
   // Sleep tracking preference
-  const [sleepTrackingMode, setSleepTrackingMode] = useState("screen_usage") // "screen_usage" or "fitness_band"
+  const [sleepTrackingMode, setSleepTrackingMode] = useState("screen_usage")
   const [fitnessConnected, setFitnessConnected] = useState(false)
 
   // Sleep window states
@@ -41,17 +42,46 @@ export default function Tracker({ navigation }) {
   const [tempWakeup, setTempWakeup] = useState(new Date())
   const [pickerMode, setPickerMode] = useState(null)
 
-  // Sleep mode selection modal
-  const [modeModalVisible, setModeModalVisible] = useState(false)
+  // Activity listener
+  const [activityListener, setActivityListener] = useState(null)
 
   useEffect(() => {
     fetchSleepWindow()
     fetchSleepPreference()
+    setupActivityTracking()
   }, [])
 
   useEffect(() => {
     fetchData()
   }, [sleepWindow, sleepTrackingMode])
+
+  useEffect(() => {
+    // Cleanup on unmount
+    return () => {
+      if (activityListener) {
+        activityListener()
+      }
+    }
+  }, [activityListener])
+
+  const setupActivityTracking = async () => {
+    try {
+      // Start activity tracking
+      await behavioralTrackingService.startActivityTracking()
+      
+      // Setup real-time listener
+      const unsubscribe = behavioralTrackingService.addActivityListener((activityUpdate) => {
+        if (activityUpdate && activityUpdate.type === 'step_update') {
+          // Refresh data when we get real-time updates
+          fetchData()
+        }
+      })
+      
+      setActivityListener(() => unsubscribe)
+    } catch (error) {
+      console.error("Failed to setup activity tracking:", error)
+    }
+  }
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -78,28 +108,26 @@ export default function Tracker({ navigation }) {
     await localStorageService.saveSleepPreferences(prefs)
     setSleepTrackingMode(mode)
     setFitnessConnected(connected)
-    setModeModalVisible(false)
     await fetchData()
   }
 
-  const connectFitnessBand = async () => {
+  const connectHealthConnect = async () => {
     try {
-      // Request Health Connect permission
       const granted = await behavioralTrackingService.requestHealthConnectPermission?.()
       
       if (granted) {
         setFitnessConnected(true)
         await saveSleepPreference("fitness_band", true)
-        Alert.alert("Success", "Fitness band connected successfully!")
+        Alert.alert("Success", "Health Connect connected successfully! Your activity data from Google Fit will now sync automatically.")
       } else {
         Alert.alert(
           "Permission Required",
-          "Please enable Health Connect permissions in your device settings to track sleep data from your fitness band."
+          "Please enable Health Connect permissions in your device settings to sync data from Google Fit."
         )
       }
     } catch (error) {
-      console.error("Error connecting fitness band:", error)
-      Alert.alert("Error", "Failed to connect fitness band. Please try again.")
+      console.error("Error connecting Health Connect:", error)
+      Alert.alert("Error", "Failed to connect Health Connect. Please try again.")
     }
   }
 
@@ -108,10 +136,11 @@ export default function Tracker({ navigation }) {
     try {
       const wellnessData = await localStorageService.getWellnessData(1)
       const usageStats = await behavioralTrackingService.getDailyUsageStats()
-      const todayWellness = wellnessData[0]
-
-      const appUsage = usageStats?.appUsage || [];
       
+      // Get activity data from Health Connect
+      const activityData = await behavioralTrackingService.getCurrentActivityData()
+      
+      const appUsage = usageStats?.appUsage || [];
       const totalUsageMinutes = appUsage.reduce(
         (sum, app) => sum + (app.durationMinutes || 0),
         0
@@ -123,15 +152,13 @@ export default function Tracker({ navigation }) {
       let sleepConfidence = 0
 
       if (sleepTrackingMode === "fitness_band" && fitnessConnected) {
-        // Use fitness band data
         const fitnessData = await localStorageService.getFitnessSleepData(1)
         if (fitnessData && fitnessData.length > 0) {
           sleepHours = fitnessData[0].sleepHours || 0
-          sleepSource = "Fitness Band"
+          sleepSource = "Health Connect"
           sleepConfidence = fitnessData[0].confidence || 0.95
         }
       } else {
-        // Use screen usage estimation
         const screenSleepData = await localStorageService.getScreenUsageSleepData(1)
         if (screenSleepData && screenSleepData.length > 0) {
           sleepHours = screenSleepData[0].estimatedSleepHours || 0
@@ -156,15 +183,6 @@ export default function Tracker({ navigation }) {
             bgColor: "#e0e7ff",
           },
           {
-            icon: "walk",
-            value: usageStats.activityMinutes
-              ? `${usageStats.activityMinutes}m`
-              : "Not tracked",
-            label: "Activity",
-            color: "#3b82f6",
-            bgColor: "#dbeafe",
-          },
-          {
             icon: "phone-portrait",
             value: totalUsageMinutes > 0 ? formatDuration(totalUsageMinutes): "Not tracked",
             label: "Screen",
@@ -172,7 +190,7 @@ export default function Tracker({ navigation }) {
             bgColor: "#d1fae5",
           },
         ],
-        activity: usageStats.activityMinutes || 0,
+        activityData: activityData,
         sleepData: {
           hours: sleepHours,
           source: sleepSource,
@@ -197,14 +215,6 @@ export default function Tracker({ navigation }) {
           },
         ],
         appUsage: usageStats?.appUsage || [],
-        insights: [
-          {
-            title: "Today's Insight",
-            text: "20% less screen time than yesterday - great progress!",
-            bgColor: "rgba(16, 185, 129, 0.1)",
-            color: "#374151",
-          },
-        ],
       }
 
       setData(formattedData)
@@ -241,7 +251,6 @@ export default function Tracker({ navigation }) {
     setSleepWindow(newWindow)
     await localStorageService.saveSleepWindow(newWindow)
     
-    // Also update behavioral tracking service
     const bedtimeStr = `${tempBedtime.getHours()}:${tempBedtime.getMinutes().toString().padStart(2, '0')}`
     const wakeupStr = `${tempWakeup.getHours()}:${tempWakeup.getMinutes().toString().padStart(2, '0')}`
     await behavioralTrackingService.setUserSleepWindow(bedtimeStr, wakeupStr)
@@ -260,132 +269,38 @@ export default function Tracker({ navigation }) {
     return `${hours}:${minutes.toString().padStart(2, "0")} ${ampm}`
   }
 
-  const renderSleepCard = () => {
-    if (sleepTrackingMode === "fitness_band") {
-      return renderFitnessBandSleepCard()
-    } else {
-      return renderScreenUsageSleepCard()
-    }
+  const renderActivityRing = (value, maxValue, color, strokeWidth = 12) => {
+    const size = 120
+    const radius = (size - strokeWidth) / 2
+    const circumference = radius * 2 * Math.PI
+    const progress = Math.min(value / maxValue, 1)
+    const strokeDashoffset = circumference - progress * circumference
+
+    return (
+      <Svg width={size} height={size} style={styles.ringContainer}>
+        <Circle
+          stroke="#e5e7eb"
+          fill="none"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          strokeWidth={strokeWidth}
+        />
+        <Circle
+          stroke={color}
+          fill="none"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={`${circumference} ${circumference}`}
+          strokeDashoffset={strokeDashoffset}
+          transform={`rotate(-90, ${size / 2}, ${size / 2})`}
+        />
+      </Svg>
+    )
   }
-
-  const renderFitnessBandSleepCard = () => (
-    <View style={styles.trackingCard}>
-      <View style={styles.cardHeader}>
-        <View style={styles.cardTitleContainer}>
-          <Ionicons name="watch" size={20} color="#6366f1" />
-          <Text style={styles.cardTitle}>Sleep Patterns (Fitness Band)</Text>
-        </View>
-        <TouchableOpacity onPress={() => setModeModalVisible(true)}>
-          <Ionicons name="swap-horizontal" size={20} color="#6b7280" />
-        </TouchableOpacity>
-      </View>
-      <View style={styles.cardContent}>
-        {fitnessConnected ? (
-          <>
-            <View style={[styles.dataRow, { backgroundColor: "#e0e7ff" }]}>
-              <Text style={styles.dataLabel}>Last night</Text>
-              <Text style={[styles.dataValue, { color: "#6366f1" }]}>
-                {data.sleepData.hours > 0
-                  ? `${Math.floor(data.sleepData.hours)}h ${Math.round((data.sleepData.hours % 1) * 60)}m`
-                  : "No data"}
-              </Text>
-            </View>
-            <View style={[styles.dataRow, { backgroundColor: "#dbeafe" }]}>
-              <Text style={styles.dataLabel}>Source</Text>
-              <View style={styles.sourceContainer}>
-                <View style={styles.confidenceDot} />
-                <Text style={[styles.dataValue, { color: "#3b82f6" }]}>
-                  {data.sleepData.source}
-                </Text>
-              </View>
-            </View>
-            <View style={[styles.dataRow, { backgroundColor: "#f0fdf4" }]}>
-              <Text style={styles.dataLabel}>Accuracy</Text>
-              <Text style={[styles.dataValue, { color: "#10b981" }]}>
-                {Math.round(data.sleepData.confidence * 100)}%
-              </Text>
-            </View>
-            <View style={styles.infoBox}>
-              <Ionicons name="information-circle" size={16} color="#6366f1" />
-              <Text style={styles.infoText}>
-                Sleep data synced from your fitness device
-              </Text>
-            </View>
-          </>
-        ) : (
-          <View style={styles.connectContainer}>
-            <Ionicons name="watch-outline" size={48} color="#cbd5e1" />
-            <Text style={styles.connectTitle}>No Device Connected</Text>
-            <Text style={styles.connectDescription}>
-              Connect your fitness band to track accurate sleep data
-            </Text>
-            <TouchableOpacity style={styles.connectButton} onPress={connectFitnessBand}>
-              <Ionicons name="add-circle" size={20} color="#fff" />
-              <Text style={styles.connectButtonText}>Connect Device</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={styles.switchModeButton} 
-              onPress={() => saveSleepPreference("screen_usage")}
-            >
-              <Text style={styles.switchModeText}>Use Screen Usage Instead</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
-    </View>
-  )
-
-  const renderScreenUsageSleepCard = () => (
-    <View style={styles.trackingCard}>
-      <View style={styles.cardHeader}>
-        <View style={styles.cardTitleContainer}>
-          <Ionicons name="moon" size={20} color="#6366f1" />
-          <Text style={styles.cardTitle}>Sleep Patterns (Estimated)</Text>
-        </View>
-        <TouchableOpacity onPress={() => setModeModalVisible(true)}>
-          <Ionicons name="swap-horizontal" size={20} color="#6b7280" />
-        </TouchableOpacity>
-      </View>
-      <View style={styles.cardContent}>
-        <View style={[styles.dataRow, { backgroundColor: "#e0e7ff" }]}>
-          <Text style={styles.dataLabel}>Estimated sleep</Text>
-          <Text style={[styles.dataValue, { color: "#6366f1" }]}>
-            {data.sleepData.hours > 0
-              ? `${Math.floor(data.sleepData.hours)}h ${Math.round((data.sleepData.hours % 1) * 60)}m`
-              : "Not tracked"}
-          </Text>
-        </View>
-        <View style={[styles.dataRow, { backgroundColor: "#dbeafe" }]}>
-          <Text style={styles.dataLabel}>Bedtime window</Text>
-          <Text style={[styles.dataValue, { color: "#3b82f6" }]}>
-            {formatTime(sleepWindow.bedtime || new Date().setHours(23, 0, 0))}
-          </Text>
-        </View>
-        <View style={[styles.dataRow, { backgroundColor: "#ede9fe" }]}>
-          <Text style={styles.dataLabel}>Wake-up window</Text>
-          <Text style={[styles.dataValue, { color: "#8b5cf6" }]}>
-            {formatTime(sleepWindow.wakeup || new Date().setHours(7, 0, 0))}
-          </Text>
-        </View>
-        <View style={[styles.dataRow, { backgroundColor: "#fef3c7" }]}>
-          <Text style={styles.dataLabel}>Estimation accuracy</Text>
-          <Text style={[styles.dataValue, { color: "#f59e0b" }]}>
-            {Math.round(data.sleepData.confidence * 100)}%
-          </Text>
-        </View>
-        <TouchableOpacity style={styles.logButton} onPress={() => setModalVisible(true)}>
-          <Ionicons name="time" size={16} color="#6366f1" />
-          <Text style={styles.logButtonText}>Adjust Sleep Window</Text>
-        </TouchableOpacity>
-        <View style={styles.infoBox}>
-          <Ionicons name="information-circle" size={16} color="#f59e0b" />
-          <Text style={styles.infoText}>
-            Sleep estimated from screen inactivity during your set window
-          </Text>
-        </View>
-      </View>
-    </View>
-  )
 
   if (loading) {
     return (
@@ -407,10 +322,10 @@ export default function Tracker({ navigation }) {
             </TouchableOpacity>
             <View style={styles.headerText}>
               <Text style={styles.headerTitle}>Wellness Tracking</Text>
-              <Text style={styles.headerSubtitle}>Understanding your patterns</Text>
+              <Text style={styles.headerSubtitle}>Your daily health metrics</Text>
             </View>
-            <TouchableOpacity style={styles.iconButton}>
-              <Ionicons name="calendar-outline" size={20} color="#64748b" />
+            <TouchableOpacity style={styles.iconButton} onPress={onRefresh}>
+              <Ionicons name="refresh-outline" size={20} color="#64748b" />
             </TouchableOpacity>
           </View>
         </View>
@@ -435,31 +350,132 @@ export default function Tracker({ navigation }) {
             </View>
           </View>
 
-          {/* Sleep Tracking - Dynamic based on mode */}
-          {renderSleepCard()}
-
-          {/* Physical Activity */}
+          {/* Physical Activity from Health Connect - With Rings */}
           <View style={styles.trackingCard}>
             <View style={styles.cardHeader}>
               <View style={styles.cardTitleContainer}>
-                <Ionicons name="walk" size={20} color="#10b981" />
+                <Ionicons name="fitness" size={20} color="#10b981" />
                 <Text style={styles.cardTitle}>Physical Activity</Text>
+                {data.activityData?.dataSource === "health_connect" && (
+                  <View style={styles.sourceTag}>
+                    <Text style={styles.sourceTagText}>Google Fit</Text>
+                  </View>
+                )}
               </View>
+              {data.activityData?.isTracking && (
+                <View style={styles.liveIndicator}>
+                  <View style={styles.liveDot} />
+                  <Text style={styles.liveText}>Live</Text>
+                </View>
+              )}
             </View>
 
             <View style={styles.cardContent}>
-              <View style={[styles.dataRow, { backgroundColor: "#ecfdf5" }]}>
-                <Text style={styles.dataLabel}>Active today</Text>
-                <Text style={[styles.dataValue, { color: "#10b981" }]}>
-                  {data.activity > 0
-                    ? `${data.activity} min`
+              {data.activityData?.dataSource === "health_connect" ? (
+                <>
+                  {/* Main Activity Ring */}
+                  <View style={styles.mainRingContainer}>
+                    <View style={styles.ringWrapper}>
+                      {renderActivityRing(
+                        data.activityData?.steps || 0,
+                        data.activityData?.goals?.steps || 10000,
+                        "#10b981"
+                      )}
+                      <View style={styles.ringCenter}>
+                        <Text style={styles.ringMainValue}>
+                          {data.activityData?.steps || 0}
+                        </Text>
+                        <Text style={styles.ringLabel}>steps</Text>
+                        <Text style={styles.ringGoal}>
+                          of {data.activityData?.goals?.steps || 10000}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Secondary Metrics */}
+                  <View style={styles.metricsRow}>
+                    <View style={styles.metricItem}>
+                      <Ionicons name="navigate" size={20} color="#f59e0b" />
+                      <Text style={styles.metricValue}>
+                        {data.activityData?.distance?.toFixed(2) || "0.00"}
+                      </Text>
+                      <Text style={styles.metricLabel}>km</Text>
+                    </View>
+
+                    <View style={styles.metricItem}>
+                      <Ionicons name="flame" size={20} color="#ef4444" />
+                      <Text style={styles.metricValue}>
+                        {Math.round(data.activityData?.calories || 0)}
+                      </Text>
+                      <Text style={styles.metricLabel}>cal</Text>
+                    </View>
+
+                    <View style={styles.metricItem}>
+                      <Ionicons name="move" size={20} color="#6366f1" />
+                      <Text style={styles.metricValue}>
+                        {data.activityData?.moveMinutes || 0}
+                      </Text>
+                      <Text style={styles.metricLabel}>move min</Text>
+                      <Text style={styles.metricGoal}>goal: 30</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.infoBox}>
+                    <Ionicons name="information-circle" size={16} color="#10b981" />
+                    <Text style={styles.infoText}>
+                      Activity data synced from Google Fit via Health Connect
+                    </Text>
+                  </View>
+                </>
+              ) : (
+                <View style={styles.connectContainer}>
+                  <Ionicons name="fitness-outline" size={48} color="#cbd5e1" />
+                  <Text style={styles.connectTitle}>Connect to Google Fit</Text>
+                  <Text style={styles.connectDescription}>
+                    Sync your activity data from Google Fit and other fitness apps through Health Connect
+                  </Text>
+                  <TouchableOpacity style={styles.connectHealthButton} onPress={connectHealthConnect}>
+                    <Ionicons name="link" size={20} color="#fff" />
+                    <Text style={styles.connectHealthText}>Connect Health Connect</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          </View>
+
+          {/* Sleep Tracking */}
+          <View style={styles.trackingCard}>
+            <View style={styles.cardHeader}>
+              <View style={styles.cardTitleContainer}>
+                <Ionicons name="moon" size={20} color="#6366f1" />
+                <Text style={styles.cardTitle}>Sleep Patterns</Text>
+              </View>
+            </View>
+            <View style={styles.cardContent}>
+              <View style={[styles.dataRow, { backgroundColor: "#e0e7ff" }]}>
+                <Text style={styles.dataLabel}>Last night</Text>
+                <Text style={[styles.dataValue, { color: "#6366f1" }]}>
+                  {data.sleepData.hours > 0
+                    ? `${Math.floor(data.sleepData.hours)}h ${Math.round((data.sleepData.hours % 1) * 60)}m`
                     : "Not tracked"}
                 </Text>
               </View>
-
-              <TouchableOpacity style={styles.logButton}>
-                <Ionicons name="add-circle" size={16} color="#10b981" />
-                <Text style={styles.logButtonText}>Add Activity Manually</Text>
+              <View style={[styles.dataRow, { backgroundColor: "#dbeafe" }]}>
+                <Text style={styles.dataLabel}>Bedtime window</Text>
+                <Text style={[styles.dataValue, { color: "#3b82f6" }]}>
+                  {formatTime(sleepWindow.bedtime || new Date().setHours(23, 0, 0))}
+                </Text>
+              </View>
+              <View style={[styles.dataRow, { backgroundColor: "#ede9fe" }]}>
+                <Text style={styles.dataLabel}>Wake-up window</Text>
+                <Text style={[styles.dataValue, { color: "#8b5cf6" }]}>
+                  {formatTime(sleepWindow.wakeup || new Date().setHours(7, 0, 0))}
+                </Text>
+              </View>
+              <TouchableOpacity style={styles.logButton} onPress={() => setModalVisible(true)}>
+                <Ionicons name="time" size={16} color="#6366f1" />
+                <Text style={styles.logButtonText}>Adjust Sleep Window</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -493,13 +509,6 @@ export default function Tracker({ navigation }) {
                       </Text>
                     </View>
                   ))}
-                </View>
-              )}
-
-              {data.insights.length > 0 && (
-                <View style={styles.insightCard}>
-                  <Text style={styles.insightTitle}>{data.insights[0].title}</Text>
-                  <Text style={styles.insightText}>{data.insights[0].text}</Text>
                 </View>
               )}
             </View>
@@ -554,81 +563,6 @@ export default function Tracker({ navigation }) {
                 <Text style={styles.saveText}>Save</Text>
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Sleep Mode Selection Modal */}
-      <Modal visible={modeModalVisible} transparent animationType="fade">
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Sleep Tracking Method</Text>
-            <Text style={styles.modalSubtitle}>
-              Choose how you want to track your sleep
-            </Text>
-
-            <TouchableOpacity
-              style={[
-                styles.modeOption,
-                sleepTrackingMode === "fitness_band" && styles.modeOptionSelected
-              ]}
-              onPress={() => {
-                if (fitnessConnected) {
-                  saveSleepPreference("fitness_band")
-                } else {
-                  setModeModalVisible(false)
-                  setTimeout(() => connectFitnessBand(), 300)
-                }
-              }}
-            >
-              <View style={styles.modeOptionContent}>
-                <View style={[styles.modeIcon, { backgroundColor: "#e0e7ff" }]}>
-                  <Ionicons name="watch" size={24} color="#6366f1" />
-                </View>
-                <View style={styles.modeTextContainer}>
-                  <Text style={styles.modeTitle}>Fitness Band</Text>
-                  <Text style={styles.modeDescription}>
-                    Accurate data from your wearable device
-                  </Text>
-                  {!fitnessConnected && (
-                    <Text style={styles.modeStatus}>Not connected</Text>
-                  )}
-                </View>
-              </View>
-              {sleepTrackingMode === "fitness_band" && (
-                <Ionicons name="checkmark-circle" size={24} color="#6366f1" />
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.modeOption,
-                sleepTrackingMode === "screen_usage" && styles.modeOptionSelected
-              ]}
-              onPress={() => saveSleepPreference("screen_usage")}
-            >
-              <View style={styles.modeOptionContent}>
-                <View style={[styles.modeIcon, { backgroundColor: "#fef3c7" }]}>
-                  <Ionicons name="phone-portrait" size={24} color="#f59e0b" />
-                </View>
-                <View style={styles.modeTextContainer}>
-                  <Text style={styles.modeTitle}>Screen Usage</Text>
-                  <Text style={styles.modeDescription}>
-                    Estimate sleep from phone inactivity
-                  </Text>
-                </View>
-              </View>
-              {sleepTrackingMode === "screen_usage" && (
-                <Ionicons name="checkmark-circle" size={24} color="#10b981" />
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              style={styles.modalCloseBtn} 
-              onPress={() => setModeModalVisible(false)}
-            >
-              <Text style={styles.modalCloseText}>Close</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -705,7 +639,140 @@ const styles = StyleSheet.create({
   },
   cardTitleContainer: { flexDirection: "row", alignItems: "center", gap: 8 },
   cardTitle: { fontSize: 18, fontWeight: "500", color: "#374151" },
+  sourceTag: {
+    backgroundColor: "#10b981",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    marginLeft: 8,
+  },
+  sourceTagText: { fontSize: 10, color: "#fff", fontWeight: "600" },
+  liveIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#fee2e2",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#ef4444",
+  },
+  liveText: { fontSize: 11, color: "#ef4444", fontWeight: "600" },
   cardContent: { paddingHorizontal: 16, paddingBottom: 16, gap: 12 },
+  mainRingContainer: {
+    alignItems: "center",
+    marginVertical: 20,
+  },
+  ringWrapper: {
+    position: "relative",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ringContainer: {
+    position: "absolute",
+  },
+  ringCenter: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 120,
+    height: 120,
+  },
+  ringMainValue: {
+    fontSize: 28,
+    fontWeight: "600",
+    color: "#374151",
+  },
+  ringLabel: {
+    fontSize: 12,
+    color: "#6b7280",
+    marginTop: 2,
+  },
+  ringGoal: {
+    fontSize: 11,
+    color: "#9ca3af",
+    marginTop: 2,
+  },
+  metricsRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#e5e7eb",
+    borderBottomWidth: 1,
+    borderBottomColor: "#e5e7eb",
+  },
+  metricItem: {
+    alignItems: "center",
+    gap: 4,
+  },
+  metricValue: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#374151",
+  },
+  metricLabel: {
+    fontSize: 11,
+    color: "#6b7280",
+    textTransform: "uppercase",
+  },
+  metricGoal: {
+    fontSize: 10,
+    color: "#9ca3af",
+  },
+  connectContainer: {
+    alignItems: "center",
+    paddingVertical: 24,
+    gap: 12,
+  },
+  connectTitle: { 
+    fontSize: 18, 
+    fontWeight: "600", 
+    color: "#374151",
+    marginTop: 8,
+  },
+  connectDescription: {
+    fontSize: 14,
+    color: "#6b7280",
+    textAlign: "center",
+    paddingHorizontal: 20,
+    lineHeight: 20,
+  },
+  connectHealthButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#10b981",
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    marginTop: 12,
+  },
+  connectHealthText: {
+    fontSize: 15,
+    color: "#fff",
+    fontWeight: "600",
+  },
+  infoBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(16, 185, 129, 0.1)",
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 4,
+  },
+  infoText: { 
+    flex: 1, 
+    fontSize: 12, 
+    color: "#059669", 
+    lineHeight: 16 
+  },
   dataRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -715,13 +782,6 @@ const styles = StyleSheet.create({
   },
   dataLabel: { fontSize: 14, color: "#6b7280" },
   dataValue: { fontSize: 14, fontWeight: "500" },
-  sourceContainer: { flexDirection: "row", alignItems: "center", gap: 6 },
-  confidenceDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#10b981",
-  },
   logButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -735,44 +795,6 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   logButtonText: { fontSize: 14, color: "#6366f1", fontWeight: "500" },
-  infoBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "rgba(99, 102, 241, 0.05)",
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 4,
-  },
-  infoText: { flex: 1, fontSize: 12, color: "#6b7280", lineHeight: 16 },
-  connectContainer: {
-    alignItems: "center",
-    paddingVertical: 24,
-    gap: 12,
-  },
-  connectTitle: { fontSize: 16, fontWeight: "500", color: "#374151" },
-  connectDescription: {
-    fontSize: 14,
-    color: "#6b7280",
-    textAlign: "center",
-    paddingHorizontal: 20,
-  },
-  connectButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "#6366f1",
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    marginTop: 8,
-  },
-  connectButtonText: { fontSize: 14, color: "#fff", fontWeight: "500" },
-  switchModeButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-  },
-  switchModeText: { fontSize: 13, color: "#6366f1", textDecorationLine: "underline" },
   appUsageContainer: {
     marginTop: 12,
     paddingTop: 8,
@@ -788,14 +810,6 @@ const styles = StyleSheet.create({
   },
   appName: { fontSize: 14, color: "#374151", flex: 1 },
   appDuration: { fontSize: 14, fontWeight: "500", color: "#10b981" },
-  insightCard: {
-    backgroundColor: "rgba(16, 185, 129, 0.1)",
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 8,
-  },
-  insightTitle: { fontSize: 14, fontWeight: "500", color: "#374151", marginBottom: 4 },
-  insightText: { fontSize: 12, color: "#6b7280" },
   loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
   loadingText: { fontSize: 16, color: "#6b7280", marginTop: 16 },
   modalContainer: {
@@ -830,37 +844,4 @@ const styles = StyleSheet.create({
   cancelText: { color: "#6b7280", fontSize: 14, fontWeight: "500" },
   saveBtn: { backgroundColor: "#6366f1", paddingVertical: 10, paddingHorizontal: 24, borderRadius: 8 },
   saveText: { color: "#fff", fontSize: 14, fontWeight: "500" },
-  modeOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#f9fafb",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 2,
-    borderColor: "#e5e7eb",
-  },
-  modeOptionSelected: {
-    borderColor: "#6366f1",
-    backgroundColor: "rgba(99, 102, 241, 0.05)",
-  },
-  modeOptionContent: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
-  modeIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  modeTextContainer: { flex: 1 },
-  modeTitle: { fontSize: 16, fontWeight: "500", color: "#374151", marginBottom: 4 },
-  modeDescription: { fontSize: 13, color: "#6b7280" },
-  modeStatus: { fontSize: 12, color: "#f59e0b", marginTop: 4, fontStyle: "italic" },
-  modalCloseBtn: {
-    alignItems: "center",
-    paddingVertical: 12,
-    marginTop: 8,
-  },
-  modalCloseText: { fontSize: 14, color: "#6b7280", fontWeight: "500" },
 })

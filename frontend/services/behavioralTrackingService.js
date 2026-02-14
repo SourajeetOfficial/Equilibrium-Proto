@@ -1,6 +1,6 @@
 // BehavioralTrackingService.js
 
-import { AppState, Alert, NativeModules, Platform } from "react-native";
+import { AppState, Alert, NativeModules, Platform, DeviceEventEmitter } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import authService from "./authService";
 import localStorageService from "./localStorageService";
@@ -20,6 +20,11 @@ class BehavioralTrackingService {
     this.defaultSleepStart = "22:00";
     this.defaultSleepEnd = "08:00";
     this.userSleepWindow = null;
+
+    // Activity tracking
+    this.activityListeners = [];
+    this.isActivityTracking = false;
+    this.activityUpdateSubscription = null;
   }
 
   // -----------------------------
@@ -111,29 +116,221 @@ class BehavioralTrackingService {
   }
 
   // -----------------------------
-  // Physical Activity (Device-based)
+  // Physical Activity Tracking
   // -----------------------------
+  async startActivityTracking() {
+    if (Platform.OS !== "android" || !ActivityRecognitionModule) {
+      console.log("Activity tracking not available");
+      return false;
+    }
 
+    try {
+      // Request permission
+      const granted = await ActivityRecognitionModule.requestPermission();
+      if (!granted) {
+        Alert.alert(
+          "Permission Required",
+          "Please enable Activity Recognition and Location permissions in settings."
+        );
+        return false;
+      }
+
+      // Load user profile
+      const profile = await localStorageService.getUserProfile();
+      if (profile && profile.weight && profile.height && profile.age) {
+        await ActivityRecognitionModule.setUserProfile(
+          profile.weight,
+          profile.height,
+          profile.age
+        );
+      }
+
+      // Load goals
+      const goals = await localStorageService.getActivityGoals();
+      if (goals && goals.steps && goals.activeMinutes) {
+        await ActivityRecognitionModule.setGoals(
+          goals.steps,
+          goals.activeMinutes
+        );
+      }
+
+      // Start tracking
+      await ActivityRecognitionModule.startTracking();
+      this.isActivityTracking = true;
+
+      // Set up event listener using DeviceEventEmitter
+      this.activityUpdateSubscription = DeviceEventEmitter.addListener(
+        'onActivityUpdate',
+        (data) => this.handleActivityUpdate(data)
+      );
+
+      return true;
+    } catch (error) {
+      console.error("Start activity tracking error:", error);
+      return false;
+    }
+  }
+
+  async stopActivityTracking() {
+    if (Platform.OS !== "android" || !ActivityRecognitionModule) return;
+
+    try {
+      await ActivityRecognitionModule.stopTracking();
+      this.isActivityTracking = false;
+
+      if (this.activityUpdateSubscription) {
+        this.activityUpdateSubscription.remove();
+        this.activityUpdateSubscription = null;
+      }
+
+      // Clear listeners
+      this.activityListeners = [];
+    } catch (error) {
+      console.error("Stop activity tracking error:", error);
+    }
+  }
+
+  handleActivityUpdate(data) {
+    // Save real-time data
+    const today = new Date().toISOString().split("T")[0];
+    localStorageService.saveActivityData(today, data);
+
+    // Notify all listeners
+    this.activityListeners.forEach(listener => {
+      try {
+        listener(data);
+      } catch (error) {
+        console.error("Activity listener error:", error);
+      }
+    });
+  }
+
+  // -----------------------------
+  // Activity Listener Management
+  // -----------------------------
+  addActivityListener(listener) {
+    if (typeof listener !== 'function') {
+      console.error('Activity listener must be a function');
+      return () => {}; // Return empty unsubscribe function
+    }
+
+    this.activityListeners.push(listener);
+
+    // Return unsubscribe function
+    return () => {
+      const index = this.activityListeners.indexOf(listener);
+      if (index > -1) {
+        this.activityListeners.splice(index, 1);
+      }
+    };
+  }
+
+  removeActivityListener(listener) {
+    const index = this.activityListeners.indexOf(listener);
+    if (index > -1) {
+      this.activityListeners.splice(index, 1);
+    }
+  }
+
+  // -----------------------------
+  // Activity Data Methods
+  // -----------------------------
+  async getCurrentActivityData() {
+    if (Platform.OS !== "android" || !ActivityRecognitionModule) {
+      return this.getEmptyActivityData();
+    }
+
+    try {
+      const currentData = await ActivityRecognitionModule.getCurrentActivityData();
+      const goals = await localStorageService.getActivityGoals();
+      
+      return {
+        ...currentData,
+        goals: goals || { steps: 10000, activeMinutes: 30 },
+        stepsProgress: (currentData.steps / (goals?.steps || 10000)) * 100,
+        activeProgress: (currentData.activeMinutes / (goals?.activeMinutes || 30)) * 100,
+      };
+    } catch (error) {
+      console.error("Get current activity error:", error);
+      return this.getEmptyActivityData();
+    }
+  }
+
+  async getWeeklyActivityData() {
+    if (Platform.OS !== "android" || !ActivityRecognitionModule) {
+      return [];
+    }
+
+    try {
+      const weekData = await ActivityRecognitionModule.getWeeklyData();
+      return weekData || [];
+    } catch (error) {
+      console.error("Get weekly data error:", error);
+      return [];
+    }
+  }
+
+  async setUserProfile(weight, height, age) {
+    await localStorageService.saveUserProfile({ weight, height, age });
+    
+    if (Platform.OS === "android" && ActivityRecognitionModule) {
+      try {
+        await ActivityRecognitionModule.setUserProfile(weight, height, age);
+      } catch (error) {
+        console.error("Set user profile error:", error);
+      }
+    }
+  }
+
+  async setActivityGoals(steps, activeMinutes) {
+    await localStorageService.saveActivityGoals({ steps, activeMinutes });
+    
+    if (Platform.OS === "android" && ActivityRecognitionModule) {
+      try {
+        await ActivityRecognitionModule.setGoals(steps, activeMinutes);
+      } catch (error) {
+        console.error("Set goals error:", error);
+      }
+    }
+  }
+
+  getEmptyActivityData() {
+    return {
+      steps: 0,
+      distance: 0,
+      calories: 0,
+      activeMinutes: 0,
+      moveMinutes: 0,
+      heartPoints: 0,
+      isTracking: false,
+      activityType: "stationary",
+      goals: { steps: 10000, activeMinutes: 30 },
+      stepsProgress: 0,
+      activeProgress: 0,
+    };
+  }
+
+  // -----------------------------
+  // Physical Activity (Legacy - Device-based)
+  // -----------------------------
   async getTodayActivityMinutes() {
     const today = new Date().toISOString().split("T")[0]
 
-    // 1️⃣ Manual override
-    const manual = await localStorageService.getManualActivity(today)
-    if (manual > 0) return manual
-
-    // 2️⃣ Sensor-based
+    // Get activity minutes from Health Connect
     if (Platform.OS === "android" && ActivityRecognitionModule) {
       try {
         const granted = await ActivityRecognitionModule.requestPermission()
         if (granted) {
           const minutes = await ActivityRecognitionModule.getTodayActivityMinutes()
           await localStorageService.saveActivityData(today, {
-            minutes,
+            activeMinutes: minutes,
             source: "sensor"
           })
           return minutes
         }
-      } catch {}
+      } catch (error) {
+        console.error("Get today activity minutes error:", error)
+      }
     }
 
     return 0
@@ -144,7 +341,9 @@ class BehavioralTrackingService {
   // -----------------------------
   async initializeTracking() {
     await this.loadUserSleepWindow();
-    await ActivityRecognitionModule?.startTracking?.()
+    
+    // Start activity tracking
+    await this.startActivityTracking();
     
     const user = authService.getCurrentUser();
     if (!user?.consentFlags?.usageTracking) return;
@@ -185,6 +384,7 @@ class BehavioralTrackingService {
     this.isTracking = false;
     this.appStateSubscription?.remove();
     if (this.screenTimeTimer) clearInterval(this.screenTimeTimer);
+    this.stopActivityTracking();
   }
 
   // -----------------------------
@@ -209,7 +409,6 @@ class BehavioralTrackingService {
 
       const activityMinutes = await this.getTodayActivityMinutes()
 
-
       // Save screen usage sleep estimation
       if (sleepData.source === "inactivity") {
         const today = new Date().toISOString().split("T")[0]
@@ -220,7 +419,6 @@ class BehavioralTrackingService {
           sleepWindow: this.getEffectiveSleepWindow(),
         });
       }
-
 
       return {
         screenTimeMinutes,
@@ -268,7 +466,6 @@ class BehavioralTrackingService {
     // Fallback: inactivity-based estimation
     return this.calculateSleepDataFromEvents(usage.events)
   }
-
 
   // -----------------------------
   // Health Connect Sleep Data
@@ -377,8 +574,6 @@ class BehavioralTrackingService {
       confidence: Math.min(0.85, sleepMinutes / ((windowEnd - windowStart) / 60000)),
     }
   }
-
-
 
   // -----------------------------
   // Helper: Get Sleep Summary for Reports

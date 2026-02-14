@@ -11,11 +11,15 @@ const STORAGE_KEYS = {
   USER_PREFERENCES: "user_preferences",
   CONSENT_DATA: "consent_data",
   SLEEP_WINDOW: "sleep_window",
-  SLEEP_PREFERENCES: "sleep_preferences", 
+  SLEEP_PREFERENCES: "sleep_preferences",
   FITNESS_SLEEP_DATA: "fitness_sleep_data",
-  SCREEN_SLEEP_DATA: "screen_sleep_data", 
+  SCREEN_SLEEP_DATA: "screen_sleep_data",
   ACTIVITY_DATA: "activity_data",
   MANUAL_ACTIVITY: "manual_activity",
+  ACTIVITY_GOALS: "activity_goals",
+  USER_PROFILE: "user_profile",
+  ACTIVITY_CACHE: "activity_cache",
+  WEEKLY_ACTIVITY: "weekly_activity",
 };
 
 class LocalStorageService {
@@ -69,32 +73,32 @@ class LocalStorageService {
   // 🔐 Encryption helpers
   encrypt(data) {
     try {
-      const key = CryptoJS.enc.Hex.parse(this.encryptionKey)
-      const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32))
-      return CryptoJS.AES.encrypt(
-        JSON.stringify(data),
-        key,
-        { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
-      ).toString()
+      const key = CryptoJS.enc.Hex.parse(this.encryptionKey);
+      const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32));
+      return CryptoJS.AES.encrypt(JSON.stringify(data), key, {
+        iv: iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7,
+      }).toString();
     } catch (error) {
-      console.error("Encryption error:", error)
-      return null
+      console.error("Encryption error:", error);
+      return null;
     }
   }
 
   decrypt(encryptedData) {
     try {
-      const key = CryptoJS.enc.Hex.parse(this.encryptionKey)
-      const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32))
+      const key = CryptoJS.enc.Hex.parse(this.encryptionKey);
+      const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32));
       const bytes = CryptoJS.AES.decrypt(encryptedData, key, {
         iv: iv,
         mode: CryptoJS.mode.CBC,
         padding: CryptoJS.pad.Pkcs7,
-      })
-      return JSON.parse(bytes.toString(CryptoJS.enc.Utf8))
+      });
+      return JSON.parse(bytes.toString(CryptoJS.enc.Utf8));
     } catch (error) {
-      console.error("Decryption error:", error)
-      return null
+      console.error("Decryption error:", error);
+      return null;
     }
   }
 
@@ -210,9 +214,7 @@ class LocalStorageService {
     }
   }
 
-  // -----------------------------
   // 🛌 Sleep window (time range for estimation)
-  // -----------------------------
   async saveSleepWindow(window) {
     return this.setItem(STORAGE_KEYS.SLEEP_WINDOW, window);
   }
@@ -221,12 +223,9 @@ class LocalStorageService {
     return this.getItem(STORAGE_KEYS.SLEEP_WINDOW);
   }
 
-  // -----------------------------
   // 🎯 Sleep tracking preferences
-  // -----------------------------
   async saveSleepPreferences(preferences) {
     try {
-      // preferences = { mode: "screen_usage" | "fitness_band", fitnessConnected: boolean }
       await this.setItem(STORAGE_KEYS.SLEEP_PREFERENCES, preferences);
       return true;
     } catch (error) {
@@ -247,9 +246,7 @@ class LocalStorageService {
     }
   }
 
-  // -----------------------------
   // 💪 Fitness band sleep data storage
-  // -----------------------------
   async saveFitnessSleepData(date, sleepData) {
     try {
       const fitnessData = (await this.getItem(STORAGE_KEYS.FITNESS_SLEEP_DATA)) || {};
@@ -280,9 +277,7 @@ class LocalStorageService {
     }
   }
 
-  // -----------------------------
   // 📱 Screen usage sleep estimation data storage
-  // -----------------------------
   async saveScreenUsageSleepData(date, sleepData) {
     try {
       const screenData = (await this.getItem(STORAGE_KEYS.SCREEN_SLEEP_DATA)) || {};
@@ -313,9 +308,7 @@ class LocalStorageService {
     }
   }
 
-  // -----------------------------
   // 🎯 Get active sleep data based on preference
-  // -----------------------------
   async getActiveSleepData(days = 30) {
     try {
       const preferences = await this.getSleepPreferences();
@@ -361,31 +354,296 @@ class LocalStorageService {
     }
   }
 
-  // 🏃 Physical activity
+  // 🏃 Physical activity - ENHANCED METHODS
   async saveActivityData(date, data) {
-    const store = (await this.getItem(STORAGE_KEYS.ACTIVITY_DATA)) || {}
-    store[date] = { ...data, timestamp: new Date().toISOString() }
-    await this.setItem(STORAGE_KEYS.ACTIVITY_DATA, store)
+    try {
+      const store = (await this.getItem(STORAGE_KEYS.ACTIVITY_DATA)) || {};
+      
+      // Merge with existing data for the date
+      const existing = store[date] || {};
+      store[date] = {
+        ...existing,
+        ...data,
+        timestamp: new Date().toISOString(),
+        // Ensure we don't lose manual activities
+        manualActivities: existing.manualActivities || [],
+      };
+      
+      await this.setItem(STORAGE_KEYS.ACTIVITY_DATA, store);
+      
+      // Update weekly cache
+      await this.updateWeeklyActivityCache(date, store[date]);
+      
+      return true;
+    } catch (error) {
+      console.error("Save activity data error:", error);
+      return false;
+    }
   }
 
   async getActivityData(days = 7) {
-    const store = (await this.getItem(STORAGE_KEYS.ACTIVITY_DATA)) || {}
-    return Object.keys(store)
-      .sort()
-      .reverse()
-      .slice(0, days)
-      .map(d => ({ date: d, ...store[d] }))
+    try {
+      const store = (await this.getItem(STORAGE_KEYS.ACTIVITY_DATA)) || {};
+      return Object.keys(store)
+        .sort()
+        .reverse()
+        .slice(0, days)
+        .map(date => ({ date, ...store[date] }));
+    } catch (error) {
+      console.error("Get activity data error:", error);
+      return [];
+    }
   }
 
-  async saveManualActivity(date, minutes) {
-    const store = (await this.getItem(STORAGE_KEYS.MANUAL_ACTIVITY)) || {}
-    store[date] = minutes
-    await this.setItem(STORAGE_KEYS.MANUAL_ACTIVITY, store)
+  async getTodayActivityData() {
+    try {
+      const today = new Date().toISOString().split("T")[0];
+      const store = (await this.getItem(STORAGE_KEYS.ACTIVITY_DATA)) || {};
+      return store[today] || {
+        steps: 0,
+        distance: 0,
+        calories: 0,
+        activeMinutes: 0,
+        moveMinutes: 0,
+        heartPoints: 0,
+        manualActivities: [],
+      };
+    } catch (error) {
+      console.error("Get today activity data error:", error);
+      return {
+        steps: 0,
+        distance: 0,
+        calories: 0,
+        activeMinutes: 0,
+        moveMinutes: 0,
+        heartPoints: 0,
+        manualActivities: [],
+      };
+    }
+  }
+
+  // Manual activity logging
+  async saveManualActivity(date, activity) {
+    try {
+      const store = (await this.getItem(STORAGE_KEYS.MANUAL_ACTIVITY)) || {};
+      
+      if (!store[date]) {
+        store[date] = [];
+      }
+      
+      store[date].push({
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        ...activity,
+      });
+      
+      await this.setItem(STORAGE_KEYS.MANUAL_ACTIVITY, store);
+      
+      // Also update main activity data
+      const activityData = await this.getTodayActivityData();
+      activityData.manualActivities = store[date];
+      await this.saveActivityData(date, activityData);
+      
+      return true;
+    } catch (error) {
+      console.error("Save manual activity error:", error);
+      return false;
+    }
   }
 
   async getManualActivity(date) {
-    const store = (await this.getItem(STORAGE_KEYS.MANUAL_ACTIVITY)) || {}
-    return store[date] || 0
+    try {
+      const store = (await this.getItem(STORAGE_KEYS.MANUAL_ACTIVITY)) || {};
+      return store[date] || [];
+    } catch (error) {
+      console.error("Get manual activity error:", error);
+      return [];
+    }
+  }
+
+  // Activity goals
+  async saveActivityGoals(goals) {
+    try {
+      await this.setItem(STORAGE_KEYS.ACTIVITY_GOALS, goals);
+      return true;
+    } catch (error) {
+      console.error("Save activity goals error:", error);
+      return false;
+    }
+  }
+
+  async getActivityGoals() {
+    try {
+      return (await this.getItem(STORAGE_KEYS.ACTIVITY_GOALS)) || {
+        steps: 10000,
+        distance: 5, // km
+        calories: 500,
+        activeMinutes: 30,
+        moveMinutes: 30,
+        heartPoints: 10,
+      };
+    } catch (error) {
+      console.error("Get activity goals error:", error);
+      return {
+        steps: 10000,
+        distance: 5,
+        calories: 500,
+        activeMinutes: 30,
+        moveMinutes: 30,
+        heartPoints: 10,
+      };
+    }
+  }
+
+  // User profile for activity calculations
+  async saveUserProfile(profile) {
+    try {
+      await this.setItem(STORAGE_KEYS.USER_PROFILE, profile);
+      return true;
+    } catch (error) {
+      console.error("Save user profile error:", error);
+      return false;
+    }
+  }
+
+  async getUserProfile() {
+    try {
+      return (await this.getItem(STORAGE_KEYS.USER_PROFILE)) || {
+        weight: 70, // kg
+        height: 170, // cm
+        age: 30,
+        gender: "male",
+      };
+    } catch (error) {
+      console.error("Get user profile error:", error);
+      return {
+        weight: 70,
+        height: 170,
+        age: 30,
+        gender: "male",
+      };
+    }
+  }
+
+  // Weekly activity cache for performance
+  async updateWeeklyActivityCache(date, data) {
+    try {
+      const cache = (await this.getItem(STORAGE_KEYS.WEEKLY_ACTIVITY)) || {};
+      cache[date] = {
+        steps: data.steps || 0,
+        distance: data.distance || 0,
+        calories: data.calories || 0,
+        activeMinutes: data.activeMinutes || 0,
+        moveMinutes: data.moveMinutes || 0,
+        heartPoints: data.heartPoints || 0,
+      };
+      
+      // Keep only last 7 days
+      const dates = Object.keys(cache).sort().reverse();
+      if (dates.length > 7) {
+        dates.slice(7).forEach(oldDate => delete cache[oldDate]);
+      }
+      
+      await this.setItem(STORAGE_KEYS.WEEKLY_ACTIVITY, cache);
+      return true;
+    } catch (error) {
+      console.error("Update weekly cache error:", error);
+      return false;
+    }
+  }
+
+  async getWeeklyActivityData() {
+    try {
+      const cache = await this.getItem(STORAGE_KEYS.WEEKLY_ACTIVITY);
+      if (cache && Object.keys(cache).length >= 7) {
+        return cache;
+      }
+      
+      // Rebuild cache if needed
+      const activityData = await this.getActivityData(7);
+      const rebuiltCache = {};
+      
+      activityData.forEach(day => {
+        rebuiltCache[day.date] = {
+          steps: day.steps || 0,
+          distance: day.distance || 0,
+          calories: day.calories || 0,
+          activeMinutes: day.activeMinutes || 0,
+          moveMinutes: day.moveMinutes || 0,
+          heartPoints: day.heartPoints || 0,
+        };
+      });
+      
+      await this.setItem(STORAGE_KEYS.WEEKLY_ACTIVITY, rebuiltCache);
+      return rebuiltCache;
+    } catch (error) {
+      console.error("Get weekly activity error:", error);
+      return {};
+    }
+  }
+
+  // Activity statistics
+  async getActivityStatistics() {
+    try {
+      const weeklyData = await this.getWeeklyActivityData();
+      const dates = Object.keys(weeklyData).sort();
+      
+      if (dates.length === 0) {
+        return {
+          averageSteps: 0,
+          averageDistance: 0,
+          averageCalories: 0,
+          averageActiveMinutes: 0,
+          totalSteps: 0,
+          totalDistance: 0,
+          totalCalories: 0,
+          bestDay: null,
+        };
+      }
+      
+      let totalSteps = 0;
+      let totalDistance = 0;
+      let totalCalories = 0;
+      let totalActiveMinutes = 0;
+      let bestDay = { date: "", steps: 0 };
+      
+      dates.forEach(date => {
+        const day = weeklyData[date];
+        totalSteps += day.steps;
+        totalDistance += day.distance;
+        totalCalories += day.calories;
+        totalActiveMinutes += day.activeMinutes;
+        
+        if (day.steps > bestDay.steps) {
+          bestDay = { date, steps: day.steps };
+        }
+      });
+      
+      const count = dates.length;
+      
+      return {
+        averageSteps: Math.round(totalSteps / count),
+        averageDistance: Math.round(totalDistance / count * 10) / 10,
+        averageCalories: Math.round(totalCalories / count),
+        averageActiveMinutes: Math.round(totalActiveMinutes / count),
+        totalSteps,
+        totalDistance: Math.round(totalDistance * 10) / 10,
+        totalCalories: Math.round(totalCalories),
+        bestDay,
+      };
+    } catch (error) {
+      console.error("Get activity statistics error:", error);
+      return {
+        averageSteps: 0,
+        averageDistance: 0,
+        averageCalories: 0,
+        averageActiveMinutes: 0,
+        totalSteps: 0,
+        totalDistance: 0,
+        totalCalories: 0,
+        bestDay: null,
+      };
+    }
   }
 
   // ⚙️ User preferences
@@ -444,7 +702,7 @@ class LocalStorageService {
     try {
       const data = {};
       for (const [key, storageKey] of Object.entries(STORAGE_KEYS)) {
-        if (key === "ENCRYPTION_KEY") continue; // don't export secret key
+        if (key === "ENCRYPTION_KEY") continue;
         data[key] = await this.getItem(storageKey);
       }
       return data;
