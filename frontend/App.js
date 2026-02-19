@@ -34,6 +34,7 @@ import authService from "./services/authService"
 import behavioralTrackingService from "./services/behavioralTrackingService"
 import notificationService from "./services/notificationService"
 import localStorageService from './services/localStorageService';
+import journalService from './services/journalService';
 
 const Tab = createBottomTabNavigator()
 const Stack = createStackNavigator()
@@ -148,13 +149,21 @@ export default function App() {
 
     authService.addAuthStateListener(authStateListener)
 
-    // Handle app state changes for behavioral tracking
-    const handleAppStateChange = (nextAppState) => {
-      if (nextAppState === "active") {
-        // App became active - behavioral tracking will handle this
-      } else if (nextAppState === "background" || nextAppState === "inactive") {
-        // App went to background - behavioral tracking will handle this
+    // Handle app state changes
+    let lastAppState = "active"
+    const handleAppStateChange = async (nextAppState) => {
+      if (nextAppState === "active" && lastAppState !== "active") {
+        // App foregrounded — finalize yesterday's journal if the date has rolled over.
+        // This is the correct place for finalization: explicit, not buried in getJournal().
+        try {
+          const today = new Date().toISOString().split("T")[0]
+          const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0]
+          await journalService.finalizeYesterdayIfNeeded(yesterday, today)
+        } catch (e) {
+          console.warn("Journal finalization on foreground failed:", e)
+        }
       }
+      lastAppState = nextAppState
     }
 
     const appStateSubscription = AppState.addEventListener("change", handleAppStateChange)

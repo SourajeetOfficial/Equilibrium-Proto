@@ -1,7 +1,10 @@
 import axios from "axios"
 import { Platform } from "react-native"
-import AsyncStorage from "@react-native-async-storage/async-storage"
+import * as SecureStore from "expo-secure-store"
 import { LOCAL_IP } from "@env"
+
+// Auth token key — must match what authService.js uses when writing the token
+const AUTH_TOKEN_KEY = "authToken"
 
 // For local development - IP from environment variable
 const localIP = LOCAL_IP 
@@ -13,7 +16,7 @@ const PRODUCTION_API_URL = "https://your-production-domain.com/api/v1"
 // Use production URL if available, otherwise use local
 const baseURL = __DEV__ ? API_BASE_URL : PRODUCTION_API_URL
 console.log("Base API URL:", baseURL)
-
+ 
 // Create axios instance
 const api = axios.create({
   baseURL,
@@ -27,7 +30,9 @@ const api = axios.create({
 api.interceptors.request.use(
   async (config) => {
     try {
-      const token = await AsyncStorage.getItem("authToken")
+      // Read JWT from SecureStore (hardware-backed on supported devices).
+      // NOTE: authService.js must also write/delete from SecureStore using AUTH_TOKEN_KEY.
+      const token = await SecureStore.getItemAsync(AUTH_TOKEN_KEY)
       if (token) {
         config.headers.Authorization = `Bearer ${token}`
       }
@@ -47,14 +52,14 @@ api.interceptors.response.use(
   (response) => {
     // Log successful responses in development
     if (__DEV__) {
-      console.log(`✅ ${response.config.method?.toUpperCase()} ${response.config.url}:`, response.status)
+      console.log(`âœ… ${response.config.method?.toUpperCase()} ${response.config.url}:`, response.status)
     }
     return response
   },
   async (error) => {
     if (__DEV__) {
       console.log(
-        `❌ ${error.config?.method?.toUpperCase()} ${error.config?.url}:`,
+        `âŒ ${error.config?.method?.toUpperCase()} ${error.config?.url}:`,
         error.response?.status || "Network Error",
       )
     }

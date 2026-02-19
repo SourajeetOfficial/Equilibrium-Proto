@@ -1,4 +1,4 @@
-// File: services/LocalStorageService.js
+// File: frontend/services/localStorageService.js
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import CryptoJS from "crypto-js";
@@ -6,6 +6,8 @@ import CryptoJS from "crypto-js";
 const STORAGE_KEYS = {
   ENCRYPTION_KEY: "device_encryption_key",
   JOURNAL_ENTRIES: "journal_entries",
+  DAILY_JOURNALS: "daily_journals",          // NEW: Daily journal structure
+  JOURNAL_SETTINGS: "journal_settings",      // NEW: Journal display settings
   WELLNESS_DATA: "wellness_data",
   APP_USAGE: "app_usage",
   USER_PREFERENCES: "user_preferences",
@@ -41,22 +43,16 @@ class LocalStorageService {
     }
   }
 
-  // 🔑 Generate or fetch stored per-device key (stored in SecureStore)
+  // ðŸ”‘ Generate or fetch stored per-device key (stored in SecureStore)
   async getOrCreateDeviceKey() {
     try {
       let key = await SecureStore.getItemAsync(STORAGE_KEYS.ENCRYPTION_KEY);
       if (key) return key;
 
-      // Generate pseudo-random key (32 chars)
-      const chars =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-      let randomKey = "";
-      for (let i = 0; i < 32; i++) {
-        randomKey += chars.charAt(Math.floor(Math.random() * chars.length));
-      }
-
-      // Hash it into 256-bit key
-      const hashedKey = CryptoJS.SHA256(randomKey).toString();
+      // CryptoJS.lib.WordArray.random() uses crypto.getRandomValues() under the hood
+      // via the react-native-get-random-values polyfill already imported in App.js.
+      // Cryptographically secure, no native module required.
+      const hashedKey = CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex);
 
       // Save securely in SecureStore
       await SecureStore.setItemAsync(STORAGE_KEYS.ENCRYPTION_KEY, hashedKey, {
@@ -70,16 +66,23 @@ class LocalStorageService {
     }
   }
 
-  // 🔐 Encryption helpers
+  // Encryption helpers
+  // Format: "ivHex:ciphertextBase64" - random IV generated per encrypt call.
+  // Legacy format (no colon prefix) still decryptable for backward compatibility.
   encrypt(data) {
     try {
       const key = CryptoJS.enc.Hex.parse(this.encryptionKey);
-      const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32));
-      return CryptoJS.AES.encrypt(JSON.stringify(data), key, {
-        iv: iv,
+      // Generate a fresh cryptographically-random 16-byte IV for every encrypt call.
+      // This ensures identical plaintexts produce different ciphertexts (CBC semantic security).
+      const ivWords = CryptoJS.lib.WordArray.random(16);
+      const ivHex = ivWords.toString(CryptoJS.enc.Hex);
+      const encrypted = CryptoJS.AES.encrypt(JSON.stringify(data), key, {
+        iv: ivWords,
         mode: CryptoJS.mode.CBC,
         padding: CryptoJS.pad.Pkcs7,
-      }).toString();
+      });
+      // Store as "ivHex:ciphertext" so decrypt can recover the IV
+      return ivHex + ":" + encrypted.toString();
     } catch (error) {
       console.error("Encryption error:", error);
       return null;
@@ -89,9 +92,22 @@ class LocalStorageService {
   decrypt(encryptedData) {
     try {
       const key = CryptoJS.enc.Hex.parse(this.encryptionKey);
-      const iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32));
-      const bytes = CryptoJS.AES.decrypt(encryptedData, key, {
-        iv: iv,
+      let iv, ciphertext;
+
+      if (encryptedData.includes(":")) {
+        // New format: "ivHex:ciphertextBase64"
+        const separatorIndex = encryptedData.indexOf(":");
+        const ivHex = encryptedData.substring(0, separatorIndex);
+        ciphertext = encryptedData.substring(separatorIndex + 1);
+        iv = CryptoJS.enc.Hex.parse(ivHex);
+      } else {
+        // Legacy format: static IV derived from key (backward compat for existing stored data)
+        iv = CryptoJS.enc.Hex.parse(this.encryptionKey.substring(0, 32));
+        ciphertext = encryptedData;
+      }
+
+      const bytes = CryptoJS.AES.decrypt(ciphertext, key, {
+        iv,
         mode: CryptoJS.mode.CBC,
         padding: CryptoJS.pad.Pkcs7,
       });
@@ -102,7 +118,7 @@ class LocalStorageService {
     }
   }
 
-  // 📦 Generic storage methods
+  // ðŸ“¦ Generic storage methods
   async setItem(key, value, encrypt = true) {
     try {
       if (value === null || value === undefined) {
@@ -142,7 +158,275 @@ class LocalStorageService {
     }
   }
 
-  // ✍️ Journal entries
+  // ========================================
+  // ðŸ“” NEW: Daily Journal Methods
+  // ========================================
+
+  /**
+   * Get or create today's journal
+   * Structure:
+   * {
+   *   date: "2024-01-13",
+   *   logs: [...],
+   *   scoreHistory: [...],
+   *   currentScore: 50,
+   *   currentSentiment: "neutral",
+   *   finalScore: null,
+   *   finalSentiment: null,
+   *   isFinalized: false
+   * }
+   */
+  async getDailyJournal(date) {
+    try {
+      const journals = (await this.getItem(STORAGE_KEYS.DAILY_JOURNALS)) || {};
+      
+      if (journals[date]) {
+        return journals[date];
+      }
+
+      // Return empty journal structure for new day
+      return {
+        date,
+        logs: [],
+        scoreHistory: [],
+        currentScore: 50, // Neutral baseline
+        currentSentiment: "neutral",
+        sentimentEmoji: "ðŸ˜",
+        finalScore: null,
+        finalSentiment: null,
+        isFinalized: false,
+        createdAt: null,
+        updatedAt: null,
+      };
+    } catch (error) {
+      console.error("Get daily journal error:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Save/update a daily journal
+   */
+  async saveDailyJournal(date, journalData) {
+    try {
+      const journals = (await this.getItem(STORAGE_KEYS.DAILY_JOURNALS)) || {};
+      
+      journals[date] = {
+        ...journalData,
+        date,
+        updatedAt: new Date().toISOString(),
+        createdAt: journalData.createdAt || new Date().toISOString(),
+      };
+
+      await this.setItem(STORAGE_KEYS.DAILY_JOURNALS, journals);
+      return journals[date];
+    } catch (error) {
+      console.error("Save daily journal error:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Add a log entry to a daily journal
+   */
+  async addJournalLog(date, logEntry) {
+    try {
+      const journal = await this.getDailyJournal(date);
+      
+      const newLog = {
+        id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        timestamp: new Date().toISOString(),
+        deleted: false,
+        ...logEntry,
+      };
+
+      journal.logs.push(newLog);
+      
+      await this.saveDailyJournal(date, journal);
+      return newLog;
+    } catch (error) {
+      console.error("Add journal log error:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Soft delete a log entry (mark as deleted, don't remove)
+   */
+  async deleteJournalLog(date, logId) {
+    try {
+      const journal = await this.getDailyJournal(date);
+      
+      const logIndex = journal.logs.findIndex(log => log.id === logId);
+      if (logIndex === -1) return false;
+
+      // Soft delete - mark as deleted but keep for reference
+      journal.logs[logIndex] = {
+        ...journal.logs[logIndex],
+        deleted: true,
+        deletedAt: new Date().toISOString(),
+      };
+
+      await this.saveDailyJournal(date, journal);
+      return true;
+    } catch (error) {
+      console.error("Delete journal log error:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Update score for a daily journal
+   */
+  async updateJournalScore(date, score, sentiment, emoji) {
+    try {
+      const journal = await this.getDailyJournal(date);
+      
+      // Add to score history
+      journal.scoreHistory.push({
+        timestamp: new Date().toISOString(),
+        score,
+        sentiment,
+        emoji,
+      });
+
+      // Update current score
+      journal.currentScore = score;
+      journal.currentSentiment = sentiment;
+      journal.sentimentEmoji = emoji;
+
+      await this.saveDailyJournal(date, journal);
+      return journal;
+    } catch (error) {
+      console.error("Update journal score error:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Finalize a day's journal (called when viewing next day)
+   */
+  async finalizeJournal(date) {
+    try {
+      const journal = await this.getDailyJournal(date);
+      
+      if (journal.isFinalized || journal.logs.length === 0) {
+        return journal;
+      }
+
+      journal.finalScore = journal.currentScore;
+      journal.finalSentiment = journal.currentSentiment;
+      journal.finalEmoji = journal.sentimentEmoji;
+      journal.isFinalized = true;
+      journal.finalizedAt = new Date().toISOString();
+
+      await this.saveDailyJournal(date, journal);
+      return journal;
+    } catch (error) {
+      console.error("Finalize journal error:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Get journals for a date range (for reports/history)
+   */
+  async getJournalsInRange(startDate, endDate) {
+    try {
+      const journals = (await this.getItem(STORAGE_KEYS.DAILY_JOURNALS)) || {};
+      
+      const result = [];
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+
+      for (const [date, journal] of Object.entries(journals)) {
+        const journalDate = new Date(date);
+        if (journalDate >= start && journalDate <= end) {
+          result.push(journal);
+        }
+      }
+
+      return result.sort((a, b) => new Date(b.date) - new Date(a.date));
+    } catch (error) {
+      console.error("Get journals in range error:", error);
+      return [];
+    }
+  }
+
+  /**
+   * Get all daily journals (sorted by date descending)
+   */
+  async getAllDailyJournals() {
+    try {
+      const journals = (await this.getItem(STORAGE_KEYS.DAILY_JOURNALS)) || {};
+      return Object.values(journals).sort((a, b) => new Date(b.date) - new Date(a.date));
+    } catch (error) {
+      console.error("Get all daily journals error:", error);
+      return [];
+    }
+  }
+
+  /**
+   * Delete entire journal for a day
+   */
+  async deleteDailyJournal(date) {
+    try {
+      const journals = (await this.getItem(STORAGE_KEYS.DAILY_JOURNALS)) || {};
+      
+      if (!journals[date]) return false;
+
+      // Keep the record but mark all logs as deleted and note journal was cleared
+      journals[date] = {
+        ...journals[date],
+        logs: journals[date].logs.map(log => ({
+          ...log,
+          deleted: true,
+          deletedAt: new Date().toISOString(),
+        })),
+        journalDeleted: true,
+        journalDeletedAt: new Date().toISOString(),
+        // Score remains unchanged as per requirement
+      };
+
+      await this.setItem(STORAGE_KEYS.DAILY_JOURNALS, journals);
+      return true;
+    } catch (error) {
+      console.error("Delete daily journal error:", error);
+      return false;
+    }
+  }
+
+  // ========================================
+  // âš™ï¸ Journal Settings
+  // ========================================
+
+  async getJournalSettings() {
+    try {
+      return (await this.getItem(STORAGE_KEYS.JOURNAL_SETTINGS)) || {
+        showDevScore: false,  // Toggle for numerical score display
+        defaultView: "today",
+      };
+    } catch (error) {
+      console.error("Get journal settings error:", error);
+      return { showDevScore: false, defaultView: "today" };
+    }
+  }
+
+  async saveJournalSettings(settings) {
+    try {
+      const current = await this.getJournalSettings();
+      await this.setItem(STORAGE_KEYS.JOURNAL_SETTINGS, { ...current, ...settings });
+      return true;
+    } catch (error) {
+      console.error("Save journal settings error:", error);
+      return false;
+    }
+  }
+
+  // ========================================
+  // âœï¸ Legacy Journal entries (keeping for backward compatibility)
+  // ========================================
+  
   async saveJournalEntry(entry) {
     try {
       const entries = (await this.getJournalEntries()) || [];
@@ -184,7 +468,10 @@ class LocalStorageService {
     }
   }
 
-  // ❤️ Wellness data
+  // ========================================
+  // â¤ï¸ Wellness data
+  // ========================================
+  
   async saveWellnessData(date, data) {
     try {
       const wellnessData = (await this.getItem(STORAGE_KEYS.WELLNESS_DATA)) || {};
@@ -214,7 +501,10 @@ class LocalStorageService {
     }
   }
 
-  // 🛌 Sleep window (time range for estimation)
+  // ========================================
+  // ðŸ›Œ Sleep window (time range for estimation)
+  // ========================================
+  
   async saveSleepWindow(window) {
     return this.setItem(STORAGE_KEYS.SLEEP_WINDOW, window);
   }
@@ -223,7 +513,7 @@ class LocalStorageService {
     return this.getItem(STORAGE_KEYS.SLEEP_WINDOW);
   }
 
-  // 🎯 Sleep tracking preferences
+  // ðŸŽ¯ Sleep tracking preferences
   async saveSleepPreferences(preferences) {
     try {
       await this.setItem(STORAGE_KEYS.SLEEP_PREFERENCES, preferences);
@@ -246,7 +536,7 @@ class LocalStorageService {
     }
   }
 
-  // 💪 Fitness band sleep data storage
+  // ðŸ’ª Fitness band sleep data storage
   async saveFitnessSleepData(date, sleepData) {
     try {
       const fitnessData = (await this.getItem(STORAGE_KEYS.FITNESS_SLEEP_DATA)) || {};
@@ -277,7 +567,7 @@ class LocalStorageService {
     }
   }
 
-  // 📱 Screen usage sleep estimation data storage
+  // ðŸ“± Screen usage sleep estimation data storage
   async saveScreenUsageSleepData(date, sleepData) {
     try {
       const screenData = (await this.getItem(STORAGE_KEYS.SCREEN_SLEEP_DATA)) || {};
@@ -308,11 +598,11 @@ class LocalStorageService {
     }
   }
 
-  // 🎯 Get active sleep data based on preference
+  // ðŸŽ¯ Get active sleep data based on preference
   async getActiveSleepData(days = 30) {
     try {
       const preferences = await this.getSleepPreferences();
-      
+
       if (preferences.mode === "fitness_band" && preferences.fitnessConnected) {
         return await this.getFitnessSleepData(days);
       } else {
@@ -324,7 +614,7 @@ class LocalStorageService {
     }
   }
 
-  // 📊 App usage tracking
+  // ðŸ“Š App usage tracking
   async saveAppUsage(date, usageData) {
     try {
       const appUsage = (await this.getItem(STORAGE_KEYS.APP_USAGE)) || {};
@@ -354,11 +644,11 @@ class LocalStorageService {
     }
   }
 
-  // 🏃 Physical activity - ENHANCED METHODS
+  // ðŸƒ Physical activity - ENHANCED METHODS
   async saveActivityData(date, data) {
     try {
       const store = (await this.getItem(STORAGE_KEYS.ACTIVITY_DATA)) || {};
-      
+
       // Merge with existing data for the date
       const existing = store[date] || {};
       store[date] = {
@@ -368,12 +658,12 @@ class LocalStorageService {
         // Ensure we don't lose manual activities
         manualActivities: existing.manualActivities || [],
       };
-      
+
       await this.setItem(STORAGE_KEYS.ACTIVITY_DATA, store);
-      
+
       // Update weekly cache
       await this.updateWeeklyActivityCache(date, store[date]);
-      
+
       return true;
     } catch (error) {
       console.error("Save activity data error:", error);
@@ -426,24 +716,24 @@ class LocalStorageService {
   async saveManualActivity(date, activity) {
     try {
       const store = (await this.getItem(STORAGE_KEYS.MANUAL_ACTIVITY)) || {};
-      
+
       if (!store[date]) {
         store[date] = [];
       }
-      
+
       store[date].push({
         id: Date.now().toString(),
         timestamp: new Date().toISOString(),
         ...activity,
       });
-      
+
       await this.setItem(STORAGE_KEYS.MANUAL_ACTIVITY, store);
-      
+
       // Also update main activity data
       const activityData = await this.getTodayActivityData();
       activityData.manualActivities = store[date];
       await this.saveActivityData(date, activityData);
-      
+
       return true;
     } catch (error) {
       console.error("Save manual activity error:", error);
@@ -537,13 +827,13 @@ class LocalStorageService {
         moveMinutes: data.moveMinutes || 0,
         heartPoints: data.heartPoints || 0,
       };
-      
+
       // Keep only last 7 days
       const dates = Object.keys(cache).sort().reverse();
       if (dates.length > 7) {
         dates.slice(7).forEach(oldDate => delete cache[oldDate]);
       }
-      
+
       await this.setItem(STORAGE_KEYS.WEEKLY_ACTIVITY, cache);
       return true;
     } catch (error) {
@@ -558,11 +848,11 @@ class LocalStorageService {
       if (cache && Object.keys(cache).length >= 7) {
         return cache;
       }
-      
+
       // Rebuild cache if needed
       const activityData = await this.getActivityData(7);
       const rebuiltCache = {};
-      
+
       activityData.forEach(day => {
         rebuiltCache[day.date] = {
           steps: day.steps || 0,
@@ -573,7 +863,7 @@ class LocalStorageService {
           heartPoints: day.heartPoints || 0,
         };
       });
-      
+
       await this.setItem(STORAGE_KEYS.WEEKLY_ACTIVITY, rebuiltCache);
       return rebuiltCache;
     } catch (error) {
@@ -587,7 +877,7 @@ class LocalStorageService {
     try {
       const weeklyData = await this.getWeeklyActivityData();
       const dates = Object.keys(weeklyData).sort();
-      
+
       if (dates.length === 0) {
         return {
           averageSteps: 0,
@@ -600,27 +890,27 @@ class LocalStorageService {
           bestDay: null,
         };
       }
-      
+
       let totalSteps = 0;
       let totalDistance = 0;
       let totalCalories = 0;
       let totalActiveMinutes = 0;
       let bestDay = { date: "", steps: 0 };
-      
+
       dates.forEach(date => {
         const day = weeklyData[date];
         totalSteps += day.steps;
         totalDistance += day.distance;
         totalCalories += day.calories;
         totalActiveMinutes += day.activeMinutes;
-        
+
         if (day.steps > bestDay.steps) {
           bestDay = { date, steps: day.steps };
         }
       });
-      
+
       const count = dates.length;
-      
+
       return {
         averageSteps: Math.round(totalSteps / count),
         averageDistance: Math.round(totalDistance / count * 10) / 10,
@@ -646,7 +936,7 @@ class LocalStorageService {
     }
   }
 
-  // ⚙️ User preferences
+  // âš™ï¸ User preferences
   async saveUserPreferences(preferences) {
     try {
       await this.setItem(STORAGE_KEYS.USER_PREFERENCES, preferences);
@@ -666,7 +956,7 @@ class LocalStorageService {
     }
   }
 
-  // ✅ Consent data
+  // âœ… Consent data
   async saveConsentData(consentData) {
     try {
       await this.setItem(STORAGE_KEYS.CONSENT_DATA, consentData);
@@ -686,7 +976,7 @@ class LocalStorageService {
     }
   }
 
-  // 🧹 Clear all data
+  // ðŸ§¹ Clear all data
   async clearAllData() {
     try {
       await AsyncStorage.multiRemove(Object.values(STORAGE_KEYS));
@@ -697,7 +987,7 @@ class LocalStorageService {
     }
   }
 
-  // 📤 Export all data (without key)
+  // ðŸ“¤ Export all data (without key)
   async exportAllData() {
     try {
       const data = {};

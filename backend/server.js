@@ -17,7 +17,7 @@ const app = express();
 // Middleware
 app.use(express.json()); // Body parser for JSON
 app.use(cors({
-    origin: ["http://localhost:19006", `exp://${process.env.IP}:8081`], // Add your Expo dev URLs
+    origin: ["http://localhost:8081", `exp://${process.env.IP}:8081`], // Add your Expo dev URLs
     credentials: true,
   }),
 );         // Enable Cross-Origin Resource Sharing

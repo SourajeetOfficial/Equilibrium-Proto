@@ -11,6 +11,7 @@ import ResponsiveCard from "../components/ResponsiveCard"
 import ResponsiveGrid from "../components/ResponsiveGrid"
 import authService from "../services/authService"
 import localStorageService from "../services/localStorageService"
+import journalService from "../services/journalService"
 import onDeviceAIService from "../services/onDeviceAIService"
 import behavioralTrackingService from "../services/behavioralTrackingService"
 
@@ -30,6 +31,8 @@ export default function Dashboard({ navigation }) {
       pickups: 0,
     },
     insights: [],
+    moodTrend: null,       // { trend, label } from journal sentiment history
+    todayJournal: null,    // Today's journal summary
   })
   const [refreshing, setRefreshing] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -42,15 +45,8 @@ export default function Dashboard({ navigation }) {
     try {
       const currentUser = authService.getCurrentUser()
       setUser(currentUser)
-
-      await Promise.all([
-        localStorageService.initialize(),
-        onDeviceAIService.initialize(),
-      ])
-
-      // Initialize behavioral tracking
-      await behavioralTrackingService.initializeTracking()
-
+      // Services are already initialized by App.js — no need to re-init here.
+      // Just load data directly.
       await loadDashboardData()
     } catch (error) {
       console.error("Dashboard initialization error:", error)
@@ -62,30 +58,43 @@ export default function Dashboard({ navigation }) {
 
   const loadDashboardData = async () => {
     try {
-      const [journalEntries, wellnessData, usageStats] = await Promise.all([
-        localStorageService.getJournalEntries(3),
+      const today = new Date().toISOString().split("T")[0]
+      const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0]
+
+      const [wellnessData, usageStats, todayJournalResult, recentJournals] = await Promise.all([
         localStorageService.getWellnessData(7),
-        behavioralTrackingService.getDailyUsageStats()
+        behavioralTrackingService.getDailyUsageStats(),
+        journalService.getJournal(today),
+        journalService.getJournalsInRange(sevenDaysAgo, today),
       ])
 
       const todayData = wellnessData[0]
+      const todayJournal = todayJournalResult?.journal || null
+
+      // Use journalService display helper — no direct AI service call in screen
+      const todayJournalDisplay = journalService.getJournalDisplayData(todayJournal)
+
+      // Mood trend from last 7 days of journals
+      const moodTrend = onDeviceAIService.getSentimentTrendSummary(recentJournals)
 
       const insights = onDeviceAIService.generateWellnessInsights(wellnessData)
 
       setDashboardData({
         wellnessScore: todayData?.wellnessScore || 0,
-        recentEntries: journalEntries,
+        recentEntries: recentJournals.slice(0, 3),
         todayStats: {
           sleep: todayData?.sleepHours
             ? `${Math.floor(todayData.sleepHours)}h ${Math.round((todayData.sleepHours % 1) * 60)}m`
-            : "Not tracked", // Placeholder sleep tracking
+            : "Not tracked",
           screenTime: usageStats?.screenTimeMinutes
             ? `${Math.floor(usageStats.screenTimeMinutes / 60)}h ${usageStats.screenTimeMinutes % 60}m`
             : "Not tracked",
-          mood: todayData?.moodLabel ? capitalize(todayData.moodLabel) : "Not tracked",
+          mood: todayJournalDisplay?.sentimentLabel || (todayData?.moodLabel ? capitalize(todayData.moodLabel) : "Not tracked"),
           pickups: usageStats?.pickupCount || 0,
         },
         insights,
+        moodTrend,
+        todayJournal: todayJournalDisplay,
       })
     } catch (error) {
       console.error("Dashboard data loading error:", error)
@@ -152,11 +161,11 @@ export default function Dashboard({ navigation }) {
     ])
   }
 
-  const moodOptions = [
-    { emoji: "😊", label: "Positive", color: "#10b981" },
-    { emoji: "😐", label: "Neutral", color: "#6b7280" },
-    { emoji: "😔", label: "Negative", color: "#ef4444" },
-  ];
+  /*const moodOptions = [
+    { emoji: "ðŸ˜Š", label: "Positive", color: "#10b981" },
+    { emoji: "ðŸ˜", label: "Neutral", color: "#6b7280" },
+    { emoji: "ðŸ˜”", label: "Negative", color: "#ef4444" },
+  ];*/
 
   const quickActions = [
     {
@@ -251,27 +260,11 @@ export default function Dashboard({ navigation }) {
                   <Text style={styles.insightTitle}>Wellness Insight</Text>
                 </View>
                 <Text style={styles.insightMessage}>{dashboardData.insights[0].message}</Text>
-                <Text style={styles.insightRecommendation}>💡 {dashboardData.insights[0].recommendation}</Text>
+                <Text style={styles.insightRecommendation}>ðŸ’¡ {dashboardData.insights[0].recommendation}</Text>
               </ResponsiveCard>
             )}
 
-            {/* Quick Mood Check */}
-            <ResponsiveCard style={styles.moodCard}>
-              <Text style={styles.moodTitle}>Quick mood check-in</Text>
-              <View style={styles.moodOptions}>
-                {moodOptions.map((mood, index) => (
-                  <TouchableOpacity
-                    key={index}
-                    style={styles.moodOption}
-                    onPress={() => handleQuickMoodLog(mood.label)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.moodEmoji}>{mood.emoji}</Text>
-                    <Text style={styles.moodLabel}>{mood.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </ResponsiveCard>
+            
           </View>
 
           {/* Main Content */}
@@ -314,31 +307,78 @@ export default function Dashboard({ navigation }) {
               </ResponsiveGrid>
             </View>
 
-            {/* Recent Journal Entries */}
+            {/* Mood Trend Card — powered by getSentimentTrendSummary */}
+            {dashboardData.moodTrend && dashboardData.moodTrend.trend !== "stable" && (
+              <View style={styles.section}>
+                <ResponsiveCard
+                  backgroundColor={
+                    dashboardData.moodTrend.trend === "improving"
+                      ? "rgba(209, 250, 229, 0.9)"
+                      : "rgba(254, 242, 242, 0.9)"
+                  }
+                  style={styles.trendCard}
+                >
+                  <View style={styles.trendCardContent}>
+                    <Ionicons
+                      name={dashboardData.moodTrend.trend === "improving" ? "trending-up" : "trending-down"}
+                      size={22}
+                      color={dashboardData.moodTrend.trend === "improving" ? "#059669" : "#dc2626"}
+                    />
+                    <Text style={[
+                      styles.trendCardText,
+                      { color: dashboardData.moodTrend.trend === "improving" ? "#065f46" : "#991b1b" }
+                    ]}>
+                      {dashboardData.moodTrend.label}
+                    </Text>
+                  </View>
+                </ResponsiveCard>
+              </View>
+            )}
+
+            {/* Recent Journal Entries — using new daily journal structure */}
             {dashboardData.recentEntries.length > 0 && (
               <View style={styles.section}>
                 <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionTitle}>Recent Entries</Text>
+                  <Text style={styles.sectionTitle}>Recent Journal</Text>
                   <TouchableOpacity onPress={() => navigation.navigate("Journal")}>
                     <Text style={styles.seeAllText}>See All</Text>
                   </TouchableOpacity>
                 </View>
                 <View style={styles.journalPreview}>
-                  {dashboardData.recentEntries.slice(0, 2).map((entry) => (
-                    <ResponsiveCard key={entry.id} style={styles.journalPreviewItem}>
-                      <View style={styles.journalPreviewHeader}>
-                        <Text style={styles.journalPreviewDate}>{new Date(entry.timestamp).toLocaleDateString()}</Text>
-                        {entry.mood_label && (
-                          <View style={[styles.moodBadge, { backgroundColor: getMoodColor(entry.mood_label) }]}>
-                            <Text style={styles.moodBadgeText}>{capitalize(entry.mood_label)}</Text>
+                  {dashboardData.recentEntries.slice(0, 3).map((journal) => {
+                    const activeLogs = (journal.logs || []).filter(l => !l.deleted)
+                    const previewLog = activeLogs.find(l => l.type === "text") || activeLogs[0]
+                    const moodLog = activeLogs.find(l => l.type === "mood")
+                    if (!previewLog) return null
+                    return (
+                      <TouchableOpacity
+                        key={journal.date}
+                        onPress={() => navigation.navigate("Journal")}
+                        activeOpacity={0.7}
+                      >
+                        <ResponsiveCard style={styles.journalPreviewItem}>
+                          <View style={styles.journalPreviewHeader}>
+                            <Text style={styles.journalPreviewDate}>
+                              {new Date(journal.date + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                            </Text>
+                            <View style={styles.journalPreviewRight}>
+                              {journal.sentimentEmoji ? (
+                                <Text style={styles.journalEmoji}>{journal.sentimentEmoji}</Text>
+                              ) : null}
+                              {moodLog && (
+                                <View style={[styles.moodBadge, { backgroundColor: "#e0f2fe" }]}>
+                                  <Text style={styles.moodBadgeText}>{moodLog.moodLabel}</Text>
+                                </View>
+                              )}
+                            </View>
                           </View>
-                        )}
-                      </View>
-                      <Text style={styles.journalPreviewText} numberOfLines={2}>
-                        {entry.content}
-                      </Text>
-                    </ResponsiveCard>
-                  ))}
+                          <Text style={styles.journalPreviewText} numberOfLines={2}>
+                            {previewLog.type === "text" ? previewLog.text : `Feeling ${previewLog.moodLabel}`}
+                          </Text>
+                        </ResponsiveCard>
+                      </TouchableOpacity>
+                    )
+                  })}
                 </View>
               </View>
             )}
@@ -508,38 +548,8 @@ const styles = StyleSheet.create({
     color: "#3730a3",
     fontStyle: "italic",
   },
-  moodCard: {
-    marginBottom: 16,
-  },
-  moodTitle: {
-    fontSize: isTablet ? 18 : 16,
-    fontWeight: "600",
-    color: "#374151",
-    marginBottom: 16,
-  },
-  moodOptions: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 8,
-  },
-  moodOption: {
-    flex: 1,
-    alignItems: "center",
-    padding: isTablet ? 16 : 12,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "#e5e7eb",
-    backgroundColor: "#f9fafb",
-  },
-  moodEmoji: {
-    fontSize: isTablet ? 32 : 28,
-    marginBottom: 6,
-  },
-  moodLabel: {
-    fontSize: isTablet ? 14 : 12,
-    fontWeight: "600",
-    color: "#64748b",
-  },
+
+  
   content: {
     paddingHorizontal: 20,
   },
@@ -687,5 +697,28 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: isTablet ? 16 : 14,
     fontWeight: "600",
+  },
+  // Mood trend card
+  trendCard: {
+    marginBottom: 0,
+  },
+  trendCardContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  trendCardText: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: "500",
+    flex: 1,
+  },
+  // Journal preview updates
+  journalPreviewRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  journalEmoji: {
+    fontSize: 18,
   },
 })

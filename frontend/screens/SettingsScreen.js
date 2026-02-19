@@ -1,11 +1,17 @@
+// File: frontend/screens/SettingsScreen.js
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Switch } from "react-native"
 import { LinearGradient } from "expo-linear-gradient"
 import { Ionicons } from "@expo/vector-icons"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import SafeAreaWrapper from "../components/SafeAreaWrapper"
+
+import journalService from "../services/journalService"
+import localStorageService from "../services/localStorageService"
+
+const SETTINGS_STORAGE_KEY = "app_settings"
 
 export default function SettingsScreen({ navigation }) {
   const insets = useSafeAreaInsets()
@@ -13,11 +19,44 @@ export default function SettingsScreen({ navigation }) {
     notifications: true,
     darkMode: false,
     biometricAuth: false,
+    showDevScore: false, // Added for journal dev score
   })
 
-  const handleSettingChange = (key, value) => {
-    setSettings((prev) => ({ ...prev, [key]: value }))
-    // Here you would typically save to AsyncStorage or API
+  // Load settings on mount
+  useEffect(() => {
+    loadSettings()
+  }, [])
+
+  const loadSettings = async () => {
+    try {
+      await localStorageService.initialize()
+      const [journalSettings, appSettings] = await Promise.all([
+        journalService.getSettings(),
+        localStorageService.getItem(SETTINGS_STORAGE_KEY),
+      ])
+      setSettings((prev) => ({
+        ...prev,
+        showDevScore: journalSettings.showDevScore || false,
+        notifications: appSettings?.notifications ?? true,
+        darkMode: appSettings?.darkMode ?? false,
+        biometricAuth: appSettings?.biometricAuth ?? false,
+      }))
+    } catch (error) {
+      console.error("Error loading settings:", error)
+    }
+  }
+
+  const handleSettingChange = async (key, value) => {
+    const newSettings = { ...settings, [key]: value }
+    setSettings(newSettings)
+
+    if (key === "showDevScore") {
+      await journalService.updateSettings({ showDevScore: value })
+    }
+
+    // Persist all non-journal app settings to encrypted local storage
+    const { showDevScore, ...appSettings } = newSettings
+    await localStorageService.setItem(SETTINGS_STORAGE_KEY, appSettings)
   }
 
   const settingsGroups = [
@@ -30,6 +69,8 @@ export default function SettingsScreen({ navigation }) {
           subtitle: "Receive wellness reminders",
           type: "switch",
           value: settings.notifications,
+          icon: "notifications-outline",
+          iconColor: "#f59e0b",
         },
       ],
     },
@@ -42,6 +83,8 @@ export default function SettingsScreen({ navigation }) {
           subtitle: "Use dark theme",
           type: "switch",
           value: settings.darkMode,
+          icon: "moon-outline",
+          iconColor: "#8b5cf6",
         },
       ],
     },
@@ -54,6 +97,22 @@ export default function SettingsScreen({ navigation }) {
           subtitle: "Use fingerprint or face ID",
           type: "switch",
           value: settings.biometricAuth,
+          icon: "finger-print-outline",
+          iconColor: "#10b981",
+        },
+      ],
+    },
+    {
+      title: "Journal",
+      items: [
+        {
+          key: "showDevScore",
+          title: "Show Numerical Scores",
+          subtitle: "Display sentiment scores in journal (Dev Mode)",
+          type: "switch",
+          value: settings.showDevScore,
+          icon: "code-slash-outline",
+          iconColor: "#3b82f6",
         },
       ],
     },
@@ -65,6 +124,8 @@ export default function SettingsScreen({ navigation }) {
           title: "Privacy & Data",
           subtitle: "Manage your consent and data rights",
           type: "action",
+          icon: "shield-checkmark-outline",
+          iconColor: "#059669",
           onPress: () => navigation.navigate("PrivacySettings"),
         },
       ],
@@ -77,6 +138,8 @@ export default function SettingsScreen({ navigation }) {
           title: "Help Center",
           subtitle: "Find answers and contact support",
           type: "action",
+          icon: "help-circle-outline",
+          iconColor: "#6b7280",
           onPress: () => navigation.navigate("HelpCenter"),
         },
         {
@@ -84,6 +147,8 @@ export default function SettingsScreen({ navigation }) {
           title: "About",
           subtitle: "App version and info",
           type: "action",
+          icon: "information-circle-outline",
+          iconColor: "#6b7280",
           onPress: () => navigation.navigate("About"),
         },
       ],
@@ -116,15 +181,24 @@ export default function SettingsScreen({ navigation }) {
                     key={item.key}
                     style={[styles.settingItem, itemIndex === group.items.length - 1 && { borderBottomWidth: 0 }]}
                   >
+                    {/* Icon */}
+                    {item.icon && (
+                      <View style={[styles.settingIcon, { backgroundColor: `${item.iconColor}15` }]}>
+                        <Ionicons name={item.icon} size={20} color={item.iconColor} />
+                      </View>
+                    )}
+                    
                     <View style={styles.settingText}>
                       <Text style={styles.settingTitle}>{item.title}</Text>
                       <Text style={styles.settingSubtitle}>{item.subtitle}</Text>
                     </View>
+                    
                     {item.type === "switch" ? (
                       <Switch
                         value={item.value}
                         onValueChange={(value) => handleSettingChange(item.key, value)}
                         trackColor={{ false: "#e5e7eb", true: "#10b981" }}
+                        thumbColor={item.value ? "#fff" : "#fff"}
                       />
                     ) : (
                       <TouchableOpacity style={styles.actionButton} onPress={item.onPress}>
@@ -136,6 +210,13 @@ export default function SettingsScreen({ navigation }) {
               </View>
             </View>
           ))}
+          
+          {/* App Version */}
+          <View style={styles.versionContainer}>
+            <Text style={styles.versionText}>Equilibrium v1.0.0</Text>
+            <Text style={styles.versionSubtext}>Privacy-first mental wellness</Text>
+          </View>
+          
           <View style={{ height: 100 }} />
         </ScrollView>
       </LinearGradient>
@@ -187,13 +268,15 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   groupTitle: {
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#374151",
-    marginBottom: 12,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#6b7280",
+    marginBottom: 8,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
   groupCard: {
-    backgroundColor: "rgba(255, 255, 255, 0.8)",
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
     borderRadius: 12,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
@@ -204,17 +287,24 @@ const styles = StyleSheet.create({
   settingItem: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: "#f3f4f6",
+    gap: 12,
+  },
+  settingIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
   },
   settingText: {
     flex: 1,
   },
   settingTitle: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "500",
     color: "#374151",
     marginBottom: 2,
@@ -225,5 +315,19 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     padding: 4,
+  },
+  versionContainer: {
+    alignItems: "center",
+    paddingVertical: 24,
+  },
+  versionText: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#9ca3af",
+  },
+  versionSubtext: {
+    fontSize: 12,
+    color: "#d1d5db",
+    marginTop: 4,
   },
 })

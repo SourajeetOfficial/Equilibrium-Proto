@@ -1,5 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage"
+import * as SecureStore from "expo-secure-store"
 import api from "../config/api"
+
+// Auth token lives in SecureStore (hardware-backed, not readable on rooted devices).
+// User profile data (non-credential) stays in AsyncStorage — it's not sensitive.
+const AUTH_TOKEN_KEY = "authToken"
 
 class AuthService {
   constructor() {
@@ -26,20 +31,24 @@ class AuthService {
   // Initialize auth state from storage
   async initializeAuth() {
     try {
-      const [token, userData] = await AsyncStorage.multiGet(["authToken", "userData"])
+      // authToken is in SecureStore; userData is in AsyncStorage
+      const [token, userDataRaw] = await Promise.all([
+        SecureStore.getItemAsync(AUTH_TOKEN_KEY),
+        AsyncStorage.getItem("userData"),
+      ])
 
-      if (token[1] && userData[1]) {
-        this.user = JSON.parse(userData[1])
+      if (token && userDataRaw) {
+        this.user = JSON.parse(userDataRaw)
         this.isInitialized = true
 
-        // Verify token is still valid
+        // Verify token is still valid against the server
         try {
           const response = await api.get("/auth/profile")
           this.user = response.data
           await AsyncStorage.setItem("userData", JSON.stringify(this.user))
           return true
         } catch (error) {
-          // Token is invalid, clear auth data
+          // Token invalid or expired — clear everything
           await this.logout()
           return false
         }
@@ -85,8 +94,8 @@ class AuthService {
         throw new Error("No authentication token received")
       }
 
-      // Step 2: Save the token immediately
-      await AsyncStorage.setItem("authToken", token)
+      // Step 2: Save the token in SecureStore (hardware-backed storage)
+      await SecureStore.setItemAsync(AUTH_TOKEN_KEY, token)
 
       // Step 3: Fetch the full user profile with the token
       const profileResponse = await api.get("/auth/profile")
@@ -110,7 +119,7 @@ class AuthService {
       if (error.response && error.response.data) {
         // If login fails, clear any potentially invalid tokens to prevent subsequent 401s
         if (error.response.status === 401) {
-          await AsyncStorage.removeItem("authToken")
+          await SecureStore.deleteItemAsync(AUTH_TOKEN_KEY)
         }
         return { success: false, message: error.response.data.message }
       }
@@ -151,7 +160,11 @@ class AuthService {
   async logout() {
     try {
       await api.post("/auth/logout")
-      await AsyncStorage.multiRemove(["authToken", "userData"])
+      // Clear token from SecureStore and profile from AsyncStorage
+      await Promise.all([
+        SecureStore.deleteItemAsync(AUTH_TOKEN_KEY),
+        AsyncStorage.removeItem("userData"),
+      ])
 
       this.user = null
 
