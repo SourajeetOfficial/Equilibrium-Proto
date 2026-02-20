@@ -8,18 +8,12 @@ import { Ionicons } from "@expo/vector-icons"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import SafeAreaWrapper from "../components/SafeAreaWrapper"
 
-import journalService from "../services/journalService"
-import localStorageService from "../services/localStorageService"
-
-const SETTINGS_STORAGE_KEY = "app_settings"
-
 export default function SettingsScreen({ navigation }) {
   const insets = useSafeAreaInsets()
   const [settings, setSettings] = useState({
     notifications: true,
     darkMode: false,
     biometricAuth: false,
-    showDevScore: false, // Added for journal dev score
   })
 
   // Load settings on mount
@@ -29,34 +23,15 @@ export default function SettingsScreen({ navigation }) {
 
   const loadSettings = async () => {
     try {
-      await localStorageService.initialize()
-      const [journalSettings, appSettings] = await Promise.all([
-        journalService.getSettings(),
-        localStorageService.getItem(SETTINGS_STORAGE_KEY),
-      ])
-      setSettings((prev) => ({
-        ...prev,
-        showDevScore: journalSettings.showDevScore || false,
-        notifications: appSettings?.notifications ?? true,
-        darkMode: appSettings?.darkMode ?? false,
-        biometricAuth: appSettings?.biometricAuth ?? false,
-      }))
+      // Load other settings here as needed
     } catch (error) {
       console.error("Error loading settings:", error)
     }
   }
 
   const handleSettingChange = async (key, value) => {
-    const newSettings = { ...settings, [key]: value }
-    setSettings(newSettings)
-
-    if (key === "showDevScore") {
-      await journalService.updateSettings({ showDevScore: value })
-    }
-
-    // Persist all non-journal app settings to encrypted local storage
-    const { showDevScore, ...appSettings } = newSettings
-    await localStorageService.setItem(SETTINGS_STORAGE_KEY, appSettings)
+    setSettings((prev) => ({ ...prev, [key]: value }))
+    // Save other settings to AsyncStorage or API as needed
   }
 
   const settingsGroups = [
@@ -99,20 +74,6 @@ export default function SettingsScreen({ navigation }) {
           value: settings.biometricAuth,
           icon: "finger-print-outline",
           iconColor: "#10b981",
-        },
-      ],
-    },
-    {
-      title: "Journal",
-      items: [
-        {
-          key: "showDevScore",
-          title: "Show Numerical Scores",
-          subtitle: "Display sentiment scores in journal (Dev Mode)",
-          type: "switch",
-          value: settings.showDevScore,
-          icon: "code-slash-outline",
-          iconColor: "#3b82f6",
         },
       ],
     },
