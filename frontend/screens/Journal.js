@@ -14,7 +14,8 @@ import {
   KeyboardAvoidingView,
   Keyboard,
   ActivityIndicator,
-  Share
+  Share,
+  Animated,
 } from "react-native"
 import { LinearGradient } from "expo-linear-gradient"
 import { Ionicons } from "@expo/vector-icons"
@@ -167,6 +168,9 @@ export default function Journal({ navigation }) {
   const [devModeActive, setDevModeActive] = useState(devModeService.isActive)
 
   const scrollViewRef = useRef(null)
+  const moodScrollRef = useRef(null)
+  const peekDone = useRef(false)          // fire once per session
+  const peekArrowAnim = useRef(new Animated.Value(0)).current  // for arrow nudge
 
   const getTodayStr = () => new Date().toISOString().split('T')[0]
   const isToday = selectedDate === getTodayStr()
@@ -193,6 +197,36 @@ export default function Journal({ navigation }) {
   }, [selectedDate])
 
   useEffect(() => { loadJournal() }, [loadJournal])
+
+  // Peek animation — fires once per session when mood options are ready
+  useEffect(() => {
+    if (moodOptions.length === 0 || peekDone.current) return
+    peekDone.current = true
+
+    // Wait for layout to settle, then peek-scroll right and bounce back
+    const peekTimeout = setTimeout(() => {
+      moodScrollRef.current?.scrollTo({ x: 72, animated: true })
+      setTimeout(() => {
+        moodScrollRef.current?.scrollTo({ x: 0, animated: true })
+      }, 520)
+    }, 600)
+
+    // Arrow bounce loop — runs 3 times then stops
+    const bounceArrow = () => {
+      Animated.sequence([
+        Animated.timing(peekArrowAnim, { toValue: 6, duration: 300, useNativeDriver: true }),
+        Animated.timing(peekArrowAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
+      ]).start()
+    }
+    const a1 = setTimeout(bounceArrow, 600)
+    const a2 = setTimeout(bounceArrow, 1300)
+    const a3 = setTimeout(bounceArrow, 2000)
+
+    return () => {
+      clearTimeout(peekTimeout)
+      clearTimeout(a1); clearTimeout(a2); clearTimeout(a3)
+    }
+  }, [moodOptions])
 
   const changeDate = (days) => {
     const date = new Date(selectedDate + "T12:00:00")
@@ -362,21 +396,56 @@ export default function Journal({ navigation }) {
 
   const renderMoodSection = () => (
     <View style={styles.sectionContainer}>
-      <Text style={styles.sectionTitle}>Quick Mood</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.moodList}>
-        {moodOptions.map((mood) => (
-          <TouchableOpacity
-            key={mood.key}
-            style={[styles.moodBtn, { borderColor: mood.color + '40', backgroundColor: mood.color + '10' }]}
-            onPress={() => handleAddMoodEntry(mood.key)}
-            disabled={!isToday || saving}
-          >
-            {/* Use our clean emoji map instead of mood.emoji (which has encoding issues) */}
-            <Text style={styles.moodEmoji}>{getEmoji(mood.key)}</Text>
-            <Text style={[styles.moodLabel, { color: mood.color }]}>{mood.label}</Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+      <View style={styles.moodSectionHeader}>
+        <Text style={styles.sectionTitle}>Quick Mood</Text>
+        {/* Animated arrow nudge — disappears after user scrolls */}
+        <Animated.View
+          style={[
+            styles.scrollHint,
+            { transform: [{ translateX: peekArrowAnim }] }
+          ]}
+          pointerEvents="none"
+        >
+          <Ionicons name="chevron-forward" size={13} color="#94a3b8" />
+          <Ionicons name="chevron-forward" size={13} color="#cbd5e1" style={{ marginLeft: -6 }} />
+        </Animated.View>
+      </View>
+
+      {/* Wrapper clips the fade overlay to mood row bounds */}
+      <View style={styles.moodRowWrapper}>
+        <ScrollView
+          ref={moodScrollRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.moodList}
+          onScrollBeginDrag={() => {
+            // Once user scrolls manually, stop showing the hint
+            peekArrowAnim.stopAnimation()
+            Animated.timing(peekArrowAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start()
+          }}
+        >
+          {moodOptions.map((mood) => (
+            <TouchableOpacity
+              key={mood.key}
+              style={[styles.moodBtn, { borderColor: mood.color + '40', backgroundColor: mood.color + '10' }]}
+              onPress={() => handleAddMoodEntry(mood.key)}
+              disabled={!isToday || saving}
+            >
+              <Text style={styles.moodEmoji}>{getEmoji(mood.key)}</Text>
+              <Text style={[styles.moodLabel, { color: mood.color }]}>{mood.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
+        {/* Right-edge fade — passive overflow indicator, always visible */}
+        <LinearGradient
+          colors={['rgba(240,249,255,0)', 'rgba(240,249,255,0.85)', 'rgba(240,249,255,1)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.moodFadeRight}
+          pointerEvents="none"
+        />
+      </View>
     </View>
   )
 
@@ -706,7 +775,19 @@ const styles = StyleSheet.create({
   },
 
   // Mood quick-tap row
-  moodList: { paddingRight: 20 },
+  moodSectionHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10, marginLeft: 4,
+  },
+  scrollHint: {
+    flexDirection: 'row', alignItems: 'center',
+    marginRight: 4,
+  },
+  moodRowWrapper: {
+    position: 'relative',   // needed for absolute fade overlay
+  },
+  moodList: { paddingRight: 48 },   // extra right padding so last item clears the fade
   moodBtn: {
     alignItems: 'center', justifyContent: 'center',
     paddingVertical: 10, paddingHorizontal: 12,
@@ -715,6 +796,11 @@ const styles = StyleSheet.create({
   },
   moodEmoji: { fontSize: 22, marginBottom: 4 },
   moodLabel: { fontSize: 10, fontWeight: '600' },
+  moodFadeRight: {
+    position: 'absolute', right: 0, top: 0, bottom: 0,
+    width: 48,                      // width of the fade zone
+    pointerEvents: 'none',
+  },
 
   // Sentiment card
   sentimentCard: {
